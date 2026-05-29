@@ -1,0 +1,31 @@
+# Configurazione Globale Pipeline Sismica
+
+geospatial:
+  epsg: 32633                    # Sistema di proiezione UTM 33N
+  surface_elevation_m: 0.0       # Quota stimata di default (livello del mare)
+
+inversion:
+  guess_velocity_m_s: 4000.0     # Velocità iniziale (m/s)
+  velocity_min_m_s: 1500.0
+  velocity_max_m_s: 7000.0
+  min_events_per_station: 8
+  travel_time_min_s: 0.05
+  travel_time_max_s: 120.0
+  margin_km: 15.0                # Margine bounding box (km)
+
+mapping:
+  grid_points: 400               # Risoluzione interpolazione
+  contour_levels: 8
+  default_anomaly_threshold: 0.5
+
+fdsn:
+  client: "INGV"
+  network: "IV"
+  # Lista di stazioni di default (es. Campi Flegrei). Puoi cambiarla o usare file esterni.
+  stations: [
+    "CAAM", "CAFL", "CAWE", "CBAC", "CBAG", "CCAP", "CFMN", "CMIS", "CMSN", 
+    "CMTS", "CNIS", "COLB", "CPIS", "CPOZ", "CQUE", "CSFT", "CSOB", "CSTH", 
+    "CUMA", "IBCM", "IBRN", "IOCA", "IPSM", "PTMR"
+  ]
+  channels: ["HHZ", "HHN", "HHE", "EHZ", "EHN", "EHE"]
+  output_dir: "data/raw/waveforms"

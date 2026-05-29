@@ -1,0 +1,9 @@
+obspy
+pandas
+numpy
+scipy
+matplotlib
+pyproj
+geopandas
+rasterio
+pyyaml

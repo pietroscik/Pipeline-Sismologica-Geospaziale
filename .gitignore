@@ -1,0 +1,27 @@
+# Ambienti virtuali Python
+venv/
+env/
+.venv/
+
+# File temporanei e cache di Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Cartelle Dati (non caricare mai dati sensibili o enormi su Git)
+data/raw/
+data/interim/
+data/processed/
+
+# Mappe, GIS e risultati generati
+results/
+
+# File di log della pipeline
+logs/
+*.log
+
+# IDE e impostazioni di sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
