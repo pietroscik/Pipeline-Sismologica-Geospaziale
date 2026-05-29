@@ -29,6 +29,98 @@ with st.sidebar:
     st.header("⚙️ Configurazione")
     run_name = st.text_input("Nome Esecuzione (Run Name)", value="analisi_web_01")
     
+    st.subheader("📁 File di Input")
+    
+    # Opzione per usare file pre-esistenti o caricarne di nuovi
+    use_existing_files = st.radio(
+        "Sorgente dati:",
+        ["File locali", "Carica nuovi file"],
+        help="Scegli se usare file già presenti nella cartella data/raw/ o caricarne di nuovi"
+    )
+    
+    if use_existing_files == "File locali":
+        data_raw_dir = PROJECT_ROOT / "data" / "raw"
+        events_csv = st.text_input(
+            "Percorso Events CSV",
+            value=str(data_raw_dir / "science.adw9038_data_s1.csv"),
+            help="Percorso al file CSV degli eventi (es: data/raw/events.csv)"
+        )
+        picks_csv = st.text_input(
+            "Percorso Picks CSV",
+            value=str(data_raw_dir / "science.adw9038_data_s2.csv"),
+            help="Percorso al file CSV dei picks (es: data/raw/picks.csv)"
+        )
+        stations_csv = st.text_input(
+            "Percorso Stations CSV",
+            value=str(data_raw_dir / "stations.csv"),
+            help="Percorso al file CSV delle stazioni (es: data/raw/stations.csv)"
+        )
+        delta_csv = st.text_input(
+            "Percorso Delta CSV (opzionale)",
+            value="",
+            help="Percorso al file CSV pre-processato con i delta. Se fornito, salta le fasi 0-2"
+        )
+    else:
+        # File uploaders per caricare nuovi file
+        st.markdown("**Carica i file CSV richiesti:**")
+        uploaded_events = st.file_uploader(
+            "Events CSV",
+            type=["csv"],
+            help="File CSV contenente gli eventi sismici"
+        )
+        uploaded_picks = st.file_uploader(
+            "Picks CSV",
+            type=["csv"],
+            help="File CSV contenente i picks (fasi P/S)"
+        )
+        uploaded_stations = st.file_uploader(
+            "Stations CSV",
+            type=["csv"],
+            help="File CSV contenente le coordinate delle stazioni"
+        )
+        uploaded_delta = st.file_uploader(
+            "Delta CSV (opzionale)",
+            type=["csv"],
+            help="File CSV pre-processato con i delta (opzionale)"
+        )
+        
+        # Salva i file caricati in data/raw/
+        if uploaded_events or uploaded_picks or uploaded_stations or uploaded_delta:
+            data_raw_dir = PROJECT_ROOT / "data" / "raw"
+            data_raw_dir.mkdir(parents=True, exist_ok=True)
+            
+            if uploaded_events:
+                events_csv = str(data_raw_dir / uploaded_events.name)
+                with open(events_csv, "wb") as f:
+                    f.write(uploaded_events.getbuffer())
+                st.success(f"Events CSV salvato in {events_csv}")
+            else:
+                events_csv = str(data_raw_dir / "science.adw9038_data_s1.csv")
+                
+            if uploaded_picks:
+                picks_csv = str(data_raw_dir / uploaded_picks.name)
+                with open(picks_csv, "wb") as f:
+                    f.write(uploaded_picks.getbuffer())
+                st.success(f"Picks CSV salvato in {picks_csv}")
+            else:
+                picks_csv = str(data_raw_dir / "science.adw9038_data_s2.csv")
+                
+            if uploaded_stations:
+                stations_csv = str(data_raw_dir / uploaded_stations.name)
+                with open(stations_csv, "wb") as f:
+                    f.write(uploaded_stations.getbuffer())
+                st.success(f"Stations CSV salvato in {stations_csv}")
+            else:
+                stations_csv = str(data_raw_dir / "stations.csv")
+                
+            if uploaded_delta:
+                delta_csv = str(data_raw_dir / uploaded_delta.name)
+                with open(delta_csv, "wb") as f:
+                    f.write(uploaded_delta.getbuffer())
+                st.success(f"Delta CSV salvato in {delta_csv}")
+            else:
+                delta_csv = ""
+    
     st.subheader("📍 Filtro Spaziale (Fase 0)")
     use_spatial_filter = st.checkbox("Applica Filtro Spaziale", value=True)
     if use_spatial_filter:
@@ -43,6 +135,24 @@ with st.sidebar:
         dl_start = st.date_input("Data Inizio", value=pd.to_datetime("today") - pd.Timedelta(days=3))
         dl_end = st.date_input("Data Fine", value=pd.to_datetime("today"))
 
+    st.subheader("⚙️ Controllo Fasi Pipeline")
+    start_phase = st.select_slider(
+        "Fase di partenza",
+        options=[0, 1, 2, 3, 4],
+        value=0,
+        help="Seleziona da quale fase iniziare l'esecuzione (0=Selezione Spaziale, 1=Acquisizione, 2=Delta, 3=Spazializzazione, 4=GIS)"
+    )
+    
+    st.markdown("**Salta fasi specifiche:**")
+    col1, col2 = st.columns(2)
+    with col1:
+        skip_phase0 = st.checkbox("Salta Fase 0", value=False)
+        skip_phase1 = st.checkbox("Salta Fase 1", value=False)
+        skip_phase2 = st.checkbox("Salta Fase 2", value=False)
+    with col2:
+        skip_phase3 = st.checkbox("Salta Fase 3", value=False)
+        skip_phase4 = st.checkbox("Salta Fase 4", value=False)
+    
     st.markdown("---")
     run_button = st.button("🚀 Avvia Pipeline", type="primary", use_container_width=True)
     
@@ -67,39 +177,43 @@ with st.sidebar:
 # LOGICA DI ESECUZIONE
 # ==========================================
 if run_button:
-    # Controllo preliminare dei file necessari
-    data_raw_dir = PROJECT_ROOT / "data" / "raw"
-    missing_files = [f for f in ["science.adw9038_data_s1.csv", "science.adw9038_data_s2.csv", "stations.csv"] if not (data_raw_dir / f).exists()]
+    # Costruisci la lista di argomenti per run_pipeline.py
+    cmd_pipeline = [
+        sys.executable, str(PROJECT_ROOT / "run_pipeline.py"),
+        "--run-name", run_name
+    ]
     
-    if missing_files:
-        st.error("❌ Impossibile avviare la pipeline. File sorgente mancanti!")
-        for missing in missing_files:
-            st.markdown(f"- Manca: `data/raw/{missing}`")
-        st.info("💡 Inserisci i file CSV richiesti in `data/raw/` oppure scarica un dataset da un URL.")
-        
-        # Modulo per scaricare un file ZIP contenente i CSV mancanti
-        dataset_url = st.text_input("🔗 URL del file ZIP contenente i dati:", value="")
-        if st.button("📥 Scarica ed Estrai Dataset"):
-            if dataset_url:
-                import urllib.request
-                with st.spinner("Scaricamento e decompressione in corso..."):
-                    try:
-                        req = urllib.request.urlopen(dataset_url)
-                        with zipfile.ZipFile(io.BytesIO(req.read())) as z:
-                            z.extractall(data_raw_dir)
-                        st.success("✅ File estratti con successo! La pagina si aggiornerà automaticamente.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Errore durante il download: {e}")
-            else:
-                st.warning("Inserisci un URL valido prima di cliccare su Scarica.")
-        st.stop()
-
+    # Aggiungi i parametri dei file solo se forniti
+    if use_existing_files == "Carica nuovi file" or use_existing_files == "File locali":
+        if 'events_csv' in locals() and events_csv:
+            cmd_pipeline.extend(["--events-csv", events_csv])
+        if 'picks_csv' in locals() and picks_csv:
+            cmd_pipeline.extend(["--picks-csv", picks_csv])
+        if 'stations_csv' in locals() and stations_csv:
+            cmd_pipeline.extend(["--stations-csv", stations_csv])
+        if 'delta_csv' in locals() and delta_csv:
+            cmd_pipeline.extend(["--delta-csv", delta_csv])
+    
+    # Aggiungi il parametro start-phase
+    cmd_pipeline.extend(["--start-phase", str(start_phase)])
+    
+    # Aggiungi i parametri skip-phase
+    if skip_phase0:
+        cmd_pipeline.append("--skip-phase0")
+    if skip_phase1:
+        cmd_pipeline.append("--skip-phase1")
+    if skip_phase2:
+        cmd_pipeline.append("--skip-phase2")
+    if skip_phase3:
+        cmd_pipeline.append("--skip-phase3")
+    if skip_phase4:
+        cmd_pipeline.append("--skip-phase4")
+    
     status_msg = st.empty()
     status_msg.info(f"Avvio della run: **{run_name}** in corso. Attendi il completamento...", icon="⏳")
     
     # 1. Esecuzione Fase 0 (Seleziona Stazioni)
-    if use_spatial_filter:
+    if use_spatial_filter and not skip_phase0:
         with st.spinner("Fase 0: Estrazione stazioni nell'area selezionata..."):
             cmd_fase0 = [
                 sys.executable, str(PROJECT_ROOT / "scripts" / "select_stations_spatial.py"),
@@ -115,10 +229,9 @@ if run_button:
                 st.stop()
                 
     # 1.5 Esecuzione Fase 1 (Download Waveforms)
-    if run_download:
+    if run_download and not skip_phase1:
         st.info("Fase 1: Download delle tracce MiniSEED in corso. Leggi i log qui sotto in tempo reale...")
         cmd_fase1 = [
-            # L'argomento -u disabilita il buffer di Python, permettendo la lettura in tempo reale
             sys.executable, "-u", str(PROJECT_ROOT / "scripts" / "download_cf_waveforms.py"),
             "--start", dl_start.strftime("%Y-%m-%dT00:00:00"),
             "--end", dl_end.strftime("%Y-%m-%dT23:59:59")
@@ -134,7 +247,9 @@ if run_button:
             log_text += line
             lines = log_text.splitlines()
             if len(lines) > 25:
-                log_text = "\n".join(lines[-25:]) + "\n"
+                log_text = "
+".join(lines[-25:]) + "
+"
             log_box.code(log_text, language="bash")
             
         process.stdout.close()
@@ -144,15 +259,11 @@ if run_button:
         st.success("✅ Download tracce completato!")
     
     # 2. Esecuzione Pipeline Principale (run_pipeline.py)
-    with st.spinner("Esecuzione delle analisi spaziali (Fasi 1-4)..."):
-        cmd_pipeline = [
-            sys.executable, str(PROJECT_ROOT / "run_pipeline.py"),
-            "--run-name", run_name
-        ]
+    with st.spinner("Esecuzione delle analisi spaziali..."):
         try:
             res_pipe = subprocess.run(cmd_pipeline, capture_output=True, text=True, check=True)
             st.success("Pipeline completata con successo! 🎉")
-            status_msg.empty() # Rimuove il banner azzurro di attesa liberando spazio
+            status_msg.empty()
             with st.expander("Mostra Log Dettagliati dell'Orchestratore"):
                 st.code(res_pipe.stdout)
         except subprocess.CalledProcessError as e:
@@ -168,7 +279,6 @@ spatial_csv = PROJECT_ROOT / "runs" / run_name / "processed" / "deltas_spatial.c
 
 if spatial_csv.exists():
     df_spatial = load_spatial_data(str(spatial_csv), spatial_csv.stat().st_mtime)
-    # Verifichiamo che il CSV abbia le coordinate geografiche
     if not df_spatial.empty and "latitude" in df_spatial.columns and "longitude" in df_spatial.columns:
         
         # Applica il filtro del cursore
@@ -182,11 +292,11 @@ if spatial_csv.exists():
         if search_station:
             df_spatial = df_spatial[df_spatial["station"].str.contains(search_station.upper(), na=False)]
             
-        # Centriamo la mappa automaticamente calcolando la media delle coordinate
+        # Centriamo la mappa automaticamente
         center_lat = df_spatial["latitude"].mean() if not df_spatial.empty else 40.82
         center_lon = df_spatial["longitude"].mean() if not df_spatial.empty else 14.14
         
-        # Inizializziamo la mappa vuota
+        # Inizializziamo la mappa
         m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles=None)
         
         # Aggiunta basemap multiple
@@ -215,7 +325,6 @@ if spatial_csv.exists():
         # Aggiungiamo un marker per ogni stazione
         for _, row in df_spatial.iterrows():
             delta = row.get("delta_seconds", 0)
-            # Colore indicativo: rosso se ritardo marcato (>0.1), blu se anticipo marcato (<-0.1)
             color = "crimson" if delta > 0.1 else "darkblue" if delta < -0.1 else "gray"
             
             popup_html = f"<b>Stazione: {row['station']}</b><br>Delta: {delta:.3f} s"
@@ -228,10 +337,10 @@ if spatial_csv.exists():
             
         folium.LayerControl(position='topright').add_to(m)
         
-        # Renderizziamo la mappa dentro Streamlit occupando tutta la larghezza
+        # Renderizziamo la mappa
         st_folium(m, use_container_width=True, height=500, returned_objects=[])
 
-        # Tabella interattiva dei dati filtrati
+        # Tabella interattiva
         st.markdown("### 📋 Dati Stazioni Filtrati")
         if not df_spatial.empty:
             st.dataframe(
@@ -249,7 +358,7 @@ maps_dir = PROJECT_ROOT / "runs" / run_name / "maps"
 if maps_dir.exists():
     images = list(maps_dir.glob("*.png"))
     if images:
-        cols = st.columns(2)  # Crea un layout a due colonne
+        cols = st.columns(2)
         for i, img_path in enumerate(images):
             with cols[i % 2]:
                 st.image(str(img_path), caption=img_path.name, use_container_width=True)
