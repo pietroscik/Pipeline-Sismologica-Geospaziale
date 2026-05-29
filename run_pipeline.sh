@@ -42,6 +42,14 @@ STATIONS_CSV="$DATA_RAW/stations.csv"
 GLOBAL_SELECTED="$DATA_RAW/selected_stations.txt"
 SELECTED_STATIONS_TXT="$RUN_DIR/selected_stations.txt"
 
+# Controllo di integrità: verifica che i file sorgente esistano
+for req_file in "$EVENTS_CSV" "$PICKS_CSV" "$STATIONS_CSV"; do
+    if [ ! -f "$req_file" ]; then
+        echo "❌ Errore: File sorgente mancante! Assicurati di aver inserito $(basename "$req_file") in data/raw/"
+        exit 1
+    fi
+done
+
 # Creazione delle cartelle di output
 mkdir -p "$DATA_INTERIM"
 mkdir -p "$DATA_PROCESSED"

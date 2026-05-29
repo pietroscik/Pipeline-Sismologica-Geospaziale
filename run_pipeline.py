@@ -62,6 +62,12 @@ def main():
     picks_csv = data_raw_dir / "science.adw9038_data_s2.csv"
     stations_csv = data_raw_dir / "stations.csv"
     
+    # Controllo di integrità: verifica che i file sorgente esistano
+    for req_file in [events_csv, picks_csv, stations_csv]:
+        if not req_file.exists():
+            logger.error(f"❌ Errore: File sorgente mancante! Assicurati di inserire '{req_file.name}' in data/raw/")
+            sys.exit(1)
+    
     global_selected_stations = data_raw_dir / "selected_stations.txt"
     # File esportato dalla Fase 0 spaziale, ora isolato per questa esecuzione
     selected_stations_txt = run_dir / "selected_stations.txt"

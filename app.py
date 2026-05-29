@@ -36,6 +36,13 @@ with st.sidebar:
         lon = st.number_input("Longitudine (Punto Focale)", value=14.14, format="%.4f")
         radius = st.number_input("Raggio (km)", value=20.0, format="%.1f")
     
+    st.subheader("📡 Acquisizione (Fase 1)")
+    run_download = st.checkbox("Scarica Tracce (MiniSEED)", value=False, help="Scarica le forme d'onda dal server FDSN per le stazioni selezionate.")
+    if run_download:
+        st.warning("⚠️ Il download di lunghi periodi richiede svariati GB. Seleziona una finestra temporale breve (es. pochi giorni).")
+        dl_start = st.date_input("Data Inizio", value=pd.to_datetime("today") - pd.Timedelta(days=3))
+        dl_end = st.date_input("Data Fine", value=pd.to_datetime("today"))
+
     st.markdown("---")
     run_button = st.button("🚀 Avvia Pipeline", type="primary", use_container_width=True)
     
@@ -60,6 +67,34 @@ with st.sidebar:
 # LOGICA DI ESECUZIONE
 # ==========================================
 if run_button:
+    # Controllo preliminare dei file necessari
+    data_raw_dir = PROJECT_ROOT / "data" / "raw"
+    missing_files = [f for f in ["science.adw9038_data_s1.csv", "science.adw9038_data_s2.csv", "stations.csv"] if not (data_raw_dir / f).exists()]
+    
+    if missing_files:
+        st.error("❌ Impossibile avviare la pipeline. File sorgente mancanti!")
+        for missing in missing_files:
+            st.markdown(f"- Manca: `data/raw/{missing}`")
+        st.info("💡 Inserisci i file CSV richiesti in `data/raw/` oppure scarica un dataset da un URL.")
+        
+        # Modulo per scaricare un file ZIP contenente i CSV mancanti
+        dataset_url = st.text_input("🔗 URL del file ZIP contenente i dati:", value="")
+        if st.button("📥 Scarica ed Estrai Dataset"):
+            if dataset_url:
+                import urllib.request
+                with st.spinner("Scaricamento e decompressione in corso..."):
+                    try:
+                        req = urllib.request.urlopen(dataset_url)
+                        with zipfile.ZipFile(io.BytesIO(req.read())) as z:
+                            z.extractall(data_raw_dir)
+                        st.success("✅ File estratti con successo! La pagina si aggiornerà automaticamente.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Errore durante il download: {e}")
+            else:
+                st.warning("Inserisci un URL valido prima di cliccare su Scarica.")
+        st.stop()
+
     status_msg = st.empty()
     status_msg.info(f"Avvio della run: **{run_name}** in corso. Attendi il completamento...", icon="⏳")
     
@@ -78,6 +113,35 @@ if run_button:
                 st.error("Errore durante la Fase 0 (Selezione Spaziale)")
                 st.code(e.stderr)
                 st.stop()
+                
+    # 1.5 Esecuzione Fase 1 (Download Waveforms)
+    if run_download:
+        st.info("Fase 1: Download delle tracce MiniSEED in corso. Leggi i log qui sotto in tempo reale...")
+        cmd_fase1 = [
+            # L'argomento -u disabilita il buffer di Python, permettendo la lettura in tempo reale
+            sys.executable, "-u", str(PROJECT_ROOT / "scripts" / "download_cf_waveforms.py"),
+            "--start", dl_start.strftime("%Y-%m-%dT00:00:00"),
+            "--end", dl_end.strftime("%Y-%m-%dT23:59:59")
+        ]
+        if use_spatial_filter:
+            cmd_fase1.extend(["--stations-file", str(PROJECT_ROOT / "runs" / run_name / "selected_stations.txt")])
+        
+        log_box = st.empty()
+        log_text = ""
+        process = subprocess.Popen(cmd_fase1, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        
+        for line in iter(process.stdout.readline, ''):
+            log_text += line
+            lines = log_text.splitlines()
+            if len(lines) > 25:
+                log_text = "\n".join(lines[-25:]) + "\n"
+            log_box.code(log_text, language="bash")
+            
+        process.stdout.close()
+        if process.wait() != 0:
+            st.error("❌ Errore durante il download delle tracce (Fase 1)")
+            st.stop()
+        st.success("✅ Download tracce completato!")
     
     # 2. Esecuzione Pipeline Principale (run_pipeline.py)
     with st.spinner("Esecuzione delle analisi spaziali (Fasi 1-4)..."):
