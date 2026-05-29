@@ -9,3 +9,6 @@ rasterio
 pyyaml
 shapely
 contextily
+streamlit
+folium
+streamlit-folium
