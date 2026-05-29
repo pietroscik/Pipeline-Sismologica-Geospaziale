@@ -79,3 +79,37 @@ python scripts/attach_coords_to_deltas.py --delta-csv runs/flegrei_2023/processe
 # 2. Avvia la produzione grafica e GIS
 python scripts/analyze_delta_map.py --delta-csv runs/flegrei_2023/processed/deltas_spatial.csv --outdir runs/flegrei_2023/maps --export-geotiff --export-shapefile
 ```
+
+
+---
+
+## :globe_with_meridians: Interfaccia Web (Streamlit)
+
+Il progetto include un'interfaccia web interattiva basata su Streamlit che semplifica l'esecuzione della pipeline e la visualizzazione dei risultati.
+
+### Avvio Rapido
+
+```bash
+pip install streamlit folium streamlit-folium
+streamlit run app.py
+```
+
+L'interfaccia sarà accessibile all'indirizzo: http://localhost:8501
+
+### Funzionalità
+
+- Configurazione interattiva (nome run, coordinate, raggio)
+- Esecuzione automatica della pipeline con un click
+- Mappa interattiva con CartoDB, Esri Satellite, OpenStreetMap
+- HeatMap dei ritardi sismici
+- Filtri dinamici per delta e nome stazione
+- Tabella dati interattiva
+- Esportazione ZIP di tutti i risultati
+
+### Requisiti Aggiuntivi
+Le seguenti librerie sono necessarie solo per l'interfaccia Streamlit:
+- streamlit (>=1.28.0)
+- folium (>=0.14.0)
+- streamlit-folium (>=0.11.0)
+
+> Nota: Se non intendi usare l'interfaccia web, puoi omettere l'installazione di queste dipendenze.
