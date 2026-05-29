@@ -52,8 +52,10 @@ def main():
 
     # Pulizia automatica per evitare sovrascritture parziali
     if run_dir.exists():
-        logger.info(f"Pulizia della cartella di run esistente: {run_dir}")
-        shutil.rmtree(run_dir)
+        logger.info(f"Pulizia parziale della cartella di run esistente: {run_dir}")
+        for sub in [data_interim_dir, data_processed_dir, maps_dir]:
+            if sub.exists():
+                shutil.rmtree(sub)
 
     # Definizione dei file di input (Dati grezzi comuni)
     events_csv = data_raw_dir / "science.adw9038_data_s1.csv"
@@ -165,8 +167,7 @@ def main():
             "--stats-csv", out_station_stats,
             "--outdir", maps_dir,
             "--export-geotiff",
-            "--export-shapefile",
-            "--anomaly-threshold", "0.5"
+            "--export-shapefile"
         ])
 
         logger.info("=======================================================")

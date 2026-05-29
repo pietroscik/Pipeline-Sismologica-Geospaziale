@@ -14,6 +14,11 @@ st.set_page_config(page_title="Pipeline Sismologica", page_icon="🌋", layout="
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+@st.cache_data(show_spinner=False)
+def load_spatial_data(csv_path: str, mtime: float) -> pd.DataFrame:
+    """Carica il CSV in cache. L'argomento mtime assicura l'aggiornamento se il file cambia sul disco."""
+    return pd.read_csv(csv_path)
+
 st.title("🌋 Interfaccia Pipeline Sismologica Geospaziale")
 st.markdown("Pannello di controllo web per eseguire analisi sismiche e visualizzare i risultati.")
 
@@ -39,7 +44,7 @@ with st.sidebar:
     if spatial_csv.exists():
         st.markdown("---")
         st.header("🗺️ Filtri Mappa")
-        df_temp = pd.read_csv(spatial_csv)
+        df_temp = load_spatial_data(str(spatial_csv), spatial_csv.stat().st_mtime)
         if not df_temp.empty and "delta_seconds" in df_temp.columns:
             min_d = float(df_temp["delta_seconds"].min())
             max_d = float(df_temp["delta_seconds"].max())
@@ -49,19 +54,22 @@ with st.sidebar:
                 "Filtra per Delta (secondi)",
                 min_value=min_d, max_value=max_d, value=(min_d, max_d)
             )
+        search_station = st.text_input("🔍 Cerca Stazione (es. CAAM)", help="Filtra per nome della stazione")
 
 # ==========================================
 # LOGICA DI ESECUZIONE
 # ==========================================
 if run_button:
-    st.info(f"Avvio della run: **{run_name}** in corso. Attendi il completamento...", icon="⏳")
+    status_msg = st.empty()
+    status_msg.info(f"Avvio della run: **{run_name}** in corso. Attendi il completamento...", icon="⏳")
     
     # 1. Esecuzione Fase 0 (Seleziona Stazioni)
     if use_spatial_filter:
         with st.spinner("Fase 0: Estrazione stazioni nell'area selezionata..."):
             cmd_fase0 = [
                 sys.executable, str(PROJECT_ROOT / "scripts" / "select_stations_spatial.py"),
-                "--point", str(lat), str(lon), str(radius)
+                "--point", str(lat), str(lon), str(radius),
+                "--output-file", str(PROJECT_ROOT / "runs" / run_name / "selected_stations.txt")
             ]
             try:
                 res0 = subprocess.run(cmd_fase0, capture_output=True, text=True, check=True)
@@ -80,6 +88,7 @@ if run_button:
         try:
             res_pipe = subprocess.run(cmd_pipeline, capture_output=True, text=True, check=True)
             st.success("Pipeline completata con successo! 🎉")
+            status_msg.empty() # Rimuove il banner azzurro di attesa liberando spazio
             with st.expander("Mostra Log Dettagliati dell'Orchestratore"):
                 st.code(res_pipe.stdout)
         except subprocess.CalledProcessError as e:
@@ -94,7 +103,7 @@ st.header("🗺️ Mappa Interattiva delle Stazioni")
 spatial_csv = PROJECT_ROOT / "runs" / run_name / "processed" / "deltas_spatial.csv"
 
 if spatial_csv.exists():
-    df_spatial = pd.read_csv(spatial_csv)
+    df_spatial = load_spatial_data(str(spatial_csv), spatial_csv.stat().st_mtime)
     # Verifichiamo che il CSV abbia le coordinate geografiche
     if not df_spatial.empty and "latitude" in df_spatial.columns and "longitude" in df_spatial.columns:
         
@@ -104,6 +113,10 @@ if spatial_csv.exists():
                 (df_spatial["delta_seconds"] >= delta_range[0]) & 
                 (df_spatial["delta_seconds"] <= delta_range[1])
             ]
+            
+        # Applica il filtro di ricerca testuale
+        if search_station:
+            df_spatial = df_spatial[df_spatial["station"].str.contains(search_station.upper(), na=False)]
             
         # Centriamo la mappa automaticamente calcolando la media delle coordinate
         center_lat = df_spatial["latitude"].mean() if not df_spatial.empty else 40.82
@@ -153,6 +166,18 @@ if spatial_csv.exists():
         
         # Renderizziamo la mappa dentro Streamlit occupando tutta la larghezza
         st_folium(m, use_container_width=True, height=500, returned_objects=[])
+
+        # Tabella interattiva dei dati filtrati
+        st.markdown("### 📋 Dati Stazioni Filtrati")
+        if not df_spatial.empty:
+            st.dataframe(
+                df_spatial.sort_values("delta_seconds", ascending=False),
+                use_container_width=True,
+                hide_index=True
+            )
+            st.caption(f"Stazioni visualizzate: {len(df_spatial)}")
+        else:
+            st.warning("Nessuna stazione corrisponde ai criteri di filtro impostati.")
 
 st.header("📊 Mappe e Grafici Generati")
 maps_dir = PROJECT_ROOT / "runs" / run_name / "maps"

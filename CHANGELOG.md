@@ -34,4 +34,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Orchestration via Python and Bash
 - Configuration via config.yaml
 - Complete documentation in README.md
->>>>>>> REPLACE

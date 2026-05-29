@@ -31,8 +31,8 @@ MAPS_DIR="$RUN_DIR/maps"
 
 # Pulizia automatica per evitare sovrascritture parziali
 if [ -d "$RUN_DIR" ]; then
-    echo "Pulizia della cartella di run esistente: $RUN_DIR"
-    rm -rf "$RUN_DIR"
+    echo "Pulizia parziale della cartella di run esistente: $RUN_DIR"
+    rm -rf "$DATA_INTERIM" "$DATA_PROCESSED" "$MAPS_DIR"
 fi
 
 # Definizione dei file di input (modifica questi percorsi se necessario)
@@ -128,8 +128,7 @@ python "$SCRIPTS_DIR/analyze_delta_map.py" \
   --stats-csv "$DATA_PROCESSED/station_stats.csv" \
   --outdir "$MAPS_DIR" \
   --export-geotiff \
-  --export-shapefile \
-  --anomaly-threshold 0.5
+  --export-shapefile
 
 echo ""
 echo "======================================================="

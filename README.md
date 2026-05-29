@@ -77,5 +77,5 @@ python scripts/select_stations_spatial.py --point 40.82 14.14 20.0
 python scripts/attach_coords_to_deltas.py --delta-csv runs/flegrei_2023/processed/station_stats.csv --stations-csv data/raw/stations.csv --output-csv runs/flegrei_2023/processed/deltas_spatial.csv --value-column base_mean
 
 # 2. Avvia la produzione grafica e GIS
-python scripts/analyze_delta_map.py --delta-csv runs/flegrei_2023/processed/deltas_spatial.csv --outdir runs/flegrei_2023/maps --export-geotiff --export-shapefile --anomaly-threshold 0.5
+python scripts/analyze_delta_map.py --delta-csv runs/flegrei_2023/processed/deltas_spatial.csv --outdir runs/flegrei_2023/maps --export-geotiff --export-shapefile
 ```

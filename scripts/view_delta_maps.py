@@ -21,7 +21,7 @@ from rasterio.transform import array_bounds, from_bounds
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 from scipy.interpolate import griddata
 
-from utils import load_csv_with_checks, setup_logger, load_config
+from utils import load_csv_with_checks, setup_logger, load_config, get_project_root
 
 logger = setup_logger("view_maps")
 
@@ -287,7 +287,7 @@ def main() -> None:
     config = load_config()
     map_cfg = config.get("mapping", {})
     geo_cfg = config.get("geospatial", {})
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = get_project_root()
 
     parser = argparse.ArgumentParser(
         description="Visualizza run base/soft, differenza e mappe raster con basemap."

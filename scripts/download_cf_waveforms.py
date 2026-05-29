@@ -7,6 +7,7 @@ import csv
 from pathlib import Path
 import concurrent.futures
 from typing import Iterable, Sequence
+from datetime import datetime
 
 from obspy import UTCDateTime
 from obspy.clients.fdsn import Client
@@ -15,8 +16,8 @@ from utils import setup_logger, load_config
 
 logger = setup_logger("download_mseed")
 
-DEFAULT_START = "2005-01-01"
-DEFAULT_END = "2025-01-01"
+DEFAULT_START = "2005-01-01T00:00:00"
+DEFAULT_END = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 DEFAULT_BLOCK_DAYS = 30
 
 
@@ -79,12 +80,12 @@ def parse_arguments(fdsn_cfg: dict) -> argparse.Namespace:
     parser.add_argument(
         "--start",
         default=DEFAULT_START,
-        help="Data/ora iniziale (formato ISO, default: 2005-01-01).",
+        help=f"Data/ora iniziale (formato ISO, default: {DEFAULT_START}).",
     )
     parser.add_argument(
         "--end",
         default=DEFAULT_END,
-        help="Data/ora finale (formato ISO, default: 2025-01-01).",
+        help=f"Data/ora finale (formato ISO, default: {DEFAULT_END}).",
     )
     parser.add_argument(
         "--block-days",
