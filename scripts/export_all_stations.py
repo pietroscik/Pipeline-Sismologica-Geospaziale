@@ -5,10 +5,11 @@ import csv
 from pathlib import Path
 
 from obspy import read_inventory
+from utils import get_project_root
 
 
-STATIONXML_PATH = Path("CampiFlegrei_StationXML.xml")
-OUTPUT_CSV_PATH = Path("stations.csv")
+STATIONXML_PATH = get_project_root() / "CampiFlegrei_StationXML.xml"
+OUTPUT_CSV_PATH = get_project_root() / "stations.csv"
 
 
 def main() -> None:
