@@ -75,6 +75,12 @@ Esempi di uso:
     --events-csv dati/eventi.csv \
     --picks-csv dati/picks.csv \
     --stations-csv dati/stazioni.csv
+
+  # Esecuzione con analisi mobile e generazione allarmi
+  python run_pipeline.py --run-name analisi_complete \
+    --mobile-analysis \
+    --mobile-min-stations 18 \
+    --mobile-alert-threshold 0.7
 """
     )
 
@@ -108,12 +114,47 @@ Esempi di uso:
     parser.add_argument("--skip-phase3", action="store_true", help="Salta Fase 3")
     parser.add_argument("--skip-phase4", action="store_true", help="Salta Fase 4")
 
+    # === NOVITÀ: Opzioni per analisi mobile e allarmi ===
+    parser.add_argument(
+        "--mobile-analysis",
+        action="store_true",
+        help="Esegui analisi mobile e generazione allarmi dopo la pipeline principale"
+    )
+    parser.add_argument(
+        "--mobile-min-stations",
+        type=int,
+        default=18,
+        help="Soglia stazioni per allarme mobile (default: 18)"
+    )
+    parser.add_argument(
+        "--mobile-alert-threshold",
+        type=float,
+        default=0.7,
+        help="Soglia indice di rischio per allarme mobile (default: 0.7)"
+    )
+    parser.add_argument(
+        "--mobile-model-type",
+        choices=["xgboost", "random_forest"],
+        default="xgboost",
+        help="Tipo di modello ML per analisi mobile (default: xgboost)"
+    )
+    parser.add_argument(
+        "--mobile-generate-alerts",
+        action="store_true",
+        help="Genera allarmi attivi durante l'analisi mobile"
+    )
+
     args = parser.parse_args()
 
     logger.info("=" * 60)
     logger.info("  Pipeline Analisi Dati Sismici Geospaziale")
     logger.info(f"  Esecuzione ID: {args.run_name}")
     logger.info(f"  Fase di partenza: {args.start_phase}")
+    if args.mobile_analysis:
+        logger.info(f"  Analisi Mobile: ATTIVA")
+        logger.info(f"    - Soglia stazioni: {args.mobile_min_stations}")
+        logger.info(f"    - Soglia rischio: {args.mobile_alert_threshold}")
+        logger.info(f"    - Tipo modello: {args.mobile_model_type}")
     logger.info("=" * 60)
 
     scripts_dir = PROJECT_ROOT / "scripts"
@@ -309,6 +350,45 @@ Esempi di uso:
                 ]
             )
             logger.info("Fase 4 completata.")
+
+        # === NOVITÀ: Esecuzione Analisi Mobile (dopo Fase 4) ===
+        if args.mobile_analysis and args.start_phase <= 4:
+            logger.info("
+" + "=" * 60)
+            logger.info("📱 AVVIO ANALISI MOBILE + ALLARMI")
+            logger.info("=" * 60)
+            
+            # Costruisci comando per mobile_analysis_pipeline.py
+            mobile_script = PROJECT_ROOT / "mobile" / "mobile_analysis_pipeline.py"
+            
+            if not mobile_script.exists():
+                logger.error(f"Script mobile non trovato: {mobile_script}")
+                logger.error("Assicurati che mobile/mobile_analysis_pipeline.py esista")
+                # Non esco con errore, la pipeline principale e' completata
+            else:
+                cmd_mobile = [
+                    python_exe,
+                    str(mobile_script),
+                    "--input-csv", str(out_deltas_spatial) if out_deltas_spatial else str(data_processed_dir / "deltas_spatial.csv"),
+                    "--stations-csv", str(stations_csv) if stations_csv else str(data_raw_dir / "stations.csv"),
+                    "--output-dir", str(run_dir / "mobile_analysis"),
+                    "--min-stations", str(args.mobile_min_stations),
+                    "--alert-threshold", str(args.mobile_alert_threshold),
+                    "--model-type", args.mobile_model_type,
+                ]
+                
+                if args.mobile_generate_alerts:
+                    cmd_mobile.append("--generate-alerts")
+                
+                logger.info(f"Esecuzione: {' '.join(cmd_mobile)}")
+                
+                try:
+                    run_cmd(cmd_mobile, optional=True)
+                    logger.info("✅ Analisi mobile completata!")
+                    logger.info(f"   Risultati in: {run_dir / 'mobile_analysis'}")
+                except Exception as e:
+                    logger.error(f"❌ Analisi mobile fallita: {e}")
+                    # Non esco con errore, la pipeline principale e' completata
 
         logger.info("=" * 60)
         logger.info("  Pipeline completata con successo!")
