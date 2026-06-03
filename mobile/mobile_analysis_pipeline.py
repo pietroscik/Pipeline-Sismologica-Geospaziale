@@ -26,6 +26,9 @@ from typing import Optional, List
 import logging
 import yaml
 
+# Import PROJECT_ROOT for consistent path resolution
+from path_utils import PROJECT_ROOT
+
 # Configura logging
 logging.basicConfig(
     level=logging.INFO,
@@ -34,7 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Aggiungi path per import mobile
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(PROJECT_ROOT / "mobile"))
 
 
 def parse_arguments():
@@ -120,7 +123,7 @@ def load_config(config_path: Optional[Path] = None) -> dict:
     """Carica configurazione da file YAML."""
     if config_path is None:
         # Prova a caricare config default
-        default_config = Path(__file__).parent / "config" / "alert_config.yaml"
+        default_config = PROJECT_ROOT / "mobile" / "config" / "alert_config.yaml"
         if default_config.exists():
             config_path = default_config
     
@@ -130,10 +133,10 @@ def load_config(config_path: Optional[Path] = None) -> dict:
     try:
         with open(config_path) as f:
             config = yaml.safe_load(f)
-        logger.info(f"✅ Configurazione caricata da {config_path}")
+        logger.info(f"Configurazione caricata da {config_path}")
         return config or {}
     except Exception as e:
-        logger.warning(f"⚠️  Errore caricamento config: {e}")
+        logger.warning(f"Errore caricamento config: {e}")
         return {}
 
 
@@ -148,7 +151,7 @@ def run_command(
         logger.info(f"[DRY RUN] {' '.join(cmd)}")
         return True
     
-    logger.info(f"🔄 Esecuzione: {' '.join(cmd)}")
+    logger.info(f"Esecuzione: {' '.join(cmd)}")
     
     try:
         result = subprocess.run(
@@ -166,12 +169,12 @@ def run_command(
         
         return True
     except subprocess.CalledProcessError as e:
-        logger.error(f"❌ Comando fallito: {' '.join(cmd)}")
+        logger.error(f"Comando fallito: {' '.join(cmd)}")
         logger.error(f"Exit code: {e.returncode}")
         logger.error(f"Stderr: {e.stderr}")
         return False
     except Exception as e:
-        logger.error(f"❌ Errore inaspettato: {e}")
+        logger.error(f"Errore inaspettato: {e}")
         return False
 
 
@@ -210,7 +213,7 @@ def create_output_structure(output_dir: Path) -> None:
     for subdir in subdirs:
         (output_dir / subdir).mkdir(parents=True, exist_ok=True)
     
-    logger.info(f"📁 Struttura output creata: {output_dir}")
+    logger.info(f"Struttura output creata: {output_dir}")
 
 
 def copy_input_files(input_csv: Path, stations_csv: Path, output_dir: Path) -> None:
@@ -220,9 +223,9 @@ def copy_input_files(input_csv: Path, stations_csv: Path, output_dir: Path) -> N
     try:
         shutil.copy(input_csv, output_dir / input_csv.name)
         shutil.copy(stations_csv, output_dir / stations_csv.name)
-        logger.info(f"📄 File di input copiati in {output_dir}")
+        logger.info(f"File di input copiati in {output_dir}")
     except Exception as e:
-        logger.warning(f"⚠️  Errore copia file: {e}")
+        logger.warning(f"Errore copia file: {e}")
 
 
 def run_mobile_pipeline():
@@ -230,7 +233,7 @@ def run_mobile_pipeline():
     args = parse_arguments()
     
     logger.info("=" * 70)
-    logger.info("🚀 PIPELINE ANALISI MOBILE + ALLARMI SISMICI")
+    logger.info("PIPELINE ANALISI MOBILE + ALLARMI SISMICI")
     logger.info("=" * 70)
     
     # Tempo di inizio
@@ -239,7 +242,7 @@ def run_mobile_pipeline():
     try:
         # 1. Validazione input
         if not validate_input_files(args.input_csv, args.stations_csv):
-            logger.error("❌ Validazione input fallita")
+            logger.error("Validazione input fallita")
             sys.exit(1)
         
         # 2. Carica configurazione
@@ -252,13 +255,9 @@ def run_mobile_pipeline():
         copy_input_files(args.input_csv, args.stations_csv, args.output_dir)
         
         # 5. Determina script directory
-        script_dir = Path(__file__).parent / "examples" / "mobile_devices"
+        script_dir = PROJECT_ROOT / "examples" / "mobile_devices"
         if not script_dir.exists():
-            # Prova percorso alternativo
-            script_dir = Path(__file__).parent.parent / "examples" / "mobile_devices"
-        
-        if not script_dir.exists():
-            logger.error(f"❌ Directory script non trovata: {script_dir}")
+            logger.error(f"Directory script non trovata: {script_dir}")
             sys.exit(1)
         
         # 6. Esecuzione script in sequenza
@@ -266,7 +265,7 @@ def run_mobile_pipeline():
         
         # 6.1. process_pipeline.py - Georeferenziazione
         logger.info("
-📍 FASE 1: Georeferenziazione e pulizia dati...")
+FASE 1: Georeferenziazione e pulizia dati...")
         cmd1 = [
             python_exe,
             str(script_dir / "process_pipeline.py"),
@@ -275,34 +274,34 @@ def run_mobile_pipeline():
             "--output-dir", str(args.output_dir / "interim")
         ]
         if not run_command(cmd1, cwd=str(script_dir)):
-            logger.error("❌ process_pipeline.py fallito")
+            logger.error("process_pipeline.py fallito")
             sys.exit(1)
         
         # 6.2. associa_eventi.py - Clustering eventi
         logger.info("
-🔗 FASE 2: Clustering eventi e creazione catalogo...")
+FASE 2: Clustering eventi e creazione catalogo...")
         cmd2 = [
             python_exe,
             str(script_dir / "associa_eventi.py")
         ]
         if not run_command(cmd2, cwd=str(script_dir)):
-            logger.error("❌ associa_eventi.py fallito")
+            logger.error("associa_eventi.py fallito")
             sys.exit(1)
         
         # 6.3. prepara_ml.py - Feature engineering
         logger.info("
-⚙️  FASE 3: Feature engineering per ML...")
+FASE 3: Feature engineering per ML...")
         cmd3 = [
             python_exe,
             str(script_dir / "prepara_ml.py")
         ]
         if not run_command(cmd3, cwd=str(script_dir)):
-            logger.error("❌ prepara_ml.py fallito")
+            logger.error("prepara_ml.py fallito")
             sys.exit(1)
         
         # 6.4. train_modello.py - Training e allarmi
         logger.info("
-🧠 FASE 4: Training modello e generazione allarmi...")
+FASE 4: Training modello e generazione allarmi...")
         cmd4 = [
             python_exe,
             str(script_dir / "train_modello.py")
@@ -315,12 +314,12 @@ def run_mobile_pipeline():
             cmd4.extend(["--model-type", args.model_type])
         
         if not run_command(cmd4, cwd=str(script_dir)):
-            logger.error("❌ train_modello.py fallito")
+            logger.error("train_modello.py fallito")
             sys.exit(1)
         
         # 7. Copia output in directory finale
         logger.info("
-📤 Copia output in directory finale...")
+Copia output in directory finale...")
         output_files = [
             "catalogo_terremoti_unici.csv",
             "dataset_ml_sismico.csv",
@@ -334,43 +333,43 @@ def run_mobile_pipeline():
             if src.exists():
                 import shutil
                 shutil.copy(src, dst)
-                logger.info(f"   ✅ {file}")
+                logger.info(f"   Copiato: {file}")
         
         # 8. Copia modelli e allarmi
         logger.info("
-📦 Copia modelli e log allarmi...")
-        model_dir = Path("mobile/models")
-        alerts_dir = Path("mobile/alerts")
+Copia modelli e log allarmi...")
+        model_dir = PROJECT_ROOT / "mobile" / "models"
+        alerts_dir = PROJECT_ROOT / "mobile" / "alerts"
         
         if model_dir.exists():
             for model_file in model_dir.glob("*"):
                 import shutil
                 shutil.copy(model_file, args.output_dir / "models" / model_file.name)
-                logger.info(f"   ✅ Modello: {model_file.name}")
+                logger.info(f"   Modello: {model_file.name}")
         
         if alerts_dir.exists():
             for alert_file in alerts_dir.glob("*"):
                 import shutil
                 shutil.copy(alert_file, args.output_dir / "alerts" / alert_file.name)
-                logger.info(f"   ✅ Allarmi: {alert_file.name}")
+                logger.info(f"   Allarmi: {alert_file.name}")
         
         # Tempo totale
         elapsed_time = time.time() - start_time
         logger.info("
 " + "=" * 70)
-        logger.info("✅ PIPELINE COMPLETATA CON SUCCESSO!")
+        logger.info("PIPELINE COMPLETATA CON SUCCESSO!")
         logger.info("=" * 70)
-        logger.info(f"📊 Output salvato in: {args.output_dir}")
-        logger.info(f"⏱️  Tempo totale: {elapsed_time:.2f} secondi")
+        logger.info(f"Output salvato in: {args.output_dir}")
+        logger.info(f"Tempo totale: {elapsed_time:.2f} secondi")
         logger.info("=" * 70)
         
         return True
         
     except KeyboardInterrupt:
-        logger.warning("⚠️  Pipeline interrotta dall'utente")
+        logger.warning("Pipeline interrotta dall'utente")
         return False
     except Exception as e:
-        logger.error(f"❌ Errore critico: {str(e)}", exc_info=True)
+        logger.error(f"Errore critico: {str(e)}", exc_info=True)
         return False
 
 
