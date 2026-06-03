@@ -25,9 +25,20 @@ from pathlib import Path
 from typing import Optional, List
 import logging
 import yaml
+import shutil
 
 # Import PROJECT_ROOT for consistent path resolution
 from path_utils import PROJECT_ROOT
+
+# Import data validation functions
+sys.path.insert(0, str(PROJECT_ROOT / "mobile"))
+from data_validator import (
+    validate_csv_file,
+    validate_csv_columns,
+    validate_geographic_coordinates,
+    validate_file_exists,
+    DataValidationError
+)
 
 # Configura logging
 logging.basicConfig(
@@ -36,8 +47,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Aggiungi path per import mobile
-sys.path.insert(0, str(PROJECT_ROOT / "mobile"))
+# Default timeout for subprocess commands (in seconds)
+DEFAULT_TIMEOUT = 600  # 10 minutes for ML operations
 
 
 def parse_arguments():
@@ -116,6 +127,21 @@ def parse_arguments():
         help="Numero di processi paralleli (default: 1)"
     )
     
+    # Robustezza: timeout per comandi
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT,
+        help=f"Timeout per comandi in secondi (default: {DEFAULT_TIMEOUT})"
+    )
+    
+    # Robustezza: cleanup automatico in caso di errore
+    parser.add_argument(
+        "--cleanup-on-error",
+        action="store_true",
+        help="Pulisce la directory di output in caso di errore"
+    )
+    
     return parser.parse_args()
 
 
@@ -128,6 +154,7 @@ def load_config(config_path: Optional[Path] = None) -> dict:
             config_path = default_config
     
     if config_path is None or not config_path.exists():
+        logger.warning("Nessun file di configurazione trovato, uso valori default")
         return {}
     
     try:
@@ -135,8 +162,11 @@ def load_config(config_path: Optional[Path] = None) -> dict:
             config = yaml.safe_load(f)
         logger.info(f"Configurazione caricata da {config_path}")
         return config or {}
+    except yaml.YAMLError as e:
+        logger.error(f"Errore parsing configurazione YAML: {e}")
+        return {}
     except Exception as e:
-        logger.warning(f"Errore caricamento config: {e}")
+        logger.error(f"Errore caricamento config: {e}")
         return {}
 
 
@@ -144,9 +174,29 @@ def run_command(
     cmd: List[str],
     cwd: Optional[str] = None,
     dry_run: bool = False,
-    check: bool = True
+    check: bool = True,
+    timeout: Optional[int] = None
 ) -> bool:
-    """Esegue un comando."""
+    """
+    Esegue un comando con timeout e gestione errori migliorata.
+    
+    Args:
+        cmd: Lista di argomenti del comando
+        cwd: Working directory
+        dry_run: Se True, solo mostra il comando senza eseguire
+        check: Se True, solleva eccezione se il comando fallisce
+        timeout: Timeout in secondi
+    
+    Returns:
+        True se comando completato con successo
+    
+    Raises:
+        subprocess.TimeoutExpired: Se timeout superato
+        subprocess.CalledProcessError: Se comando fallisce
+    """
+    if timeout is None:
+        timeout = DEFAULT_TIMEOUT
+    
     if dry_run:
         logger.info(f"[DRY RUN] {' '.join(cmd)}")
         return True
@@ -158,30 +208,49 @@ def run_command(
             cmd,
             cwd=cwd,
             check=check,
+            timeout=timeout,
             capture_output=True,
             text=True
         )
         
         if result.stdout:
-            logger.debug(f"Output: {result.stdout}")
+            logger.debug(f"Output: {result.stdout[:500]}")
         if result.stderr:
-            logger.warning(f"Error: {result.stderr}")
+            logger.warning(f"Stderr: {result.stderr[:500]}")
         
         return True
-    except subprocess.CalledProcessError as e:
+    except subprocess.TimeoutExpired as exc:
+        logger.error(f"Comando timeout dopo {timeout}s: {' '.join(cmd)}")
+        raise
+    except subprocess.CalledProcessError as exc:
         logger.error(f"Comando fallito: {' '.join(cmd)}")
-        logger.error(f"Exit code: {e.returncode}")
-        logger.error(f"Stderr: {e.stderr}")
-        return False
-    except Exception as e:
-        logger.error(f"Errore inaspettato: {e}")
-        return False
+        logger.error(f"Exit code: {exc.returncode}")
+        if exc.stderr:
+            logger.error(f"Stderr: {exc.stderr[:500]}")
+        raise
+    except Exception as exc:
+        logger.error(f"Errore inaspettato in run_command: {exc}")
+        raise
 
 
 def validate_input_files(input_csv: Path, stations_csv: Path) -> bool:
-    """Valida che i file di input esistano."""
+    """
+    Valida che i file di input esistano e abbiano il formato corretto.
+    
+    Args:
+        input_csv: Path al file CSV input
+        stations_csv: Path al file CSV stazioni
+    
+    Returns:
+        True se validazione passa
+    
+    Raises:
+        DataValidationError: Se validazione fallisce
+        FileNotFoundError: Se file non esiste
+    """
     errors = []
     
+    # Check files exist
     if not input_csv.exists():
         errors.append(f"File non trovato: {input_csv}")
     
@@ -193,7 +262,41 @@ def validate_input_files(input_csv: Path, stations_csv: Path) -> bool:
             logger.error(error)
         return False
     
-    return True
+    # Validate CSV files
+    try:
+        # Input CSV should have basic columns
+        input_df = validate_csv_file(
+            input_csv,
+            required_columns={"station"},
+            path_description="Input CSV"
+        )
+        logger.info(f"Input CSV validato: {input_csv.name} ({len(input_df)} righe)")
+        
+        # Stations CSV should have coordinate columns
+        stations_df = validate_csv_file(
+            stations_csv,
+            required_columns={"station", "latitude", "longitude"},
+            path_description="Stations CSV"
+        )
+        
+        # Validate geographic coordinates
+        validate_geographic_coordinates(
+            stations_df,
+            lat_col="latitude",
+            lon_col="longitude"
+        )
+        logger.info(f"Stations CSV validato: {stations_csv.name} ({len(stations_df)} stazioni)")
+        
+        return True
+        
+    except DataValidationError as e:
+        logger.error(f"Validazione CSV fallita: {e.message}")
+        for err in e.errors:
+            logger.error(f"  - {err}")
+        return False
+    except Exception as e:
+        logger.error(f"Errore validazione input: {e}")
+        return False
 
 
 def create_output_structure(output_dir: Path) -> None:
@@ -218,14 +321,23 @@ def create_output_structure(output_dir: Path) -> None:
 
 def copy_input_files(input_csv: Path, stations_csv: Path, output_dir: Path) -> None:
     """Copia i file di input nella directory di output."""
-    import shutil
-    
     try:
         shutil.copy(input_csv, output_dir / input_csv.name)
         shutil.copy(stations_csv, output_dir / stations_csv.name)
         logger.info(f"File di input copiati in {output_dir}")
     except Exception as e:
         logger.warning(f"Errore copia file: {e}")
+        raise
+
+
+def cleanup_output_directory(output_dir: Path) -> None:
+    """Pulisce la directory di output in caso di errore."""
+    try:
+        if output_dir.exists():
+            logger.info(f"Pulizia directory: {output_dir}")
+            shutil.rmtree(output_dir, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"Errore durante pulizia: {e}")
 
 
 def run_mobile_pipeline():
@@ -239,10 +351,15 @@ def run_mobile_pipeline():
     # Tempo di inizio
     start_time = time.time()
     
+    # Track created files for cleanup
+    created_files = []
+    
     try:
         # 1. Validazione input
         if not validate_input_files(args.input_csv, args.stations_csv):
             logger.error("Validazione input fallita")
+            if args.cleanup_on_error:
+                cleanup_output_directory(args.output_dir)
             sys.exit(1)
         
         # 2. Carica configurazione
@@ -250,6 +367,7 @@ def run_mobile_pipeline():
         
         # 3. Crea struttura output
         create_output_structure(args.output_dir)
+        created_files.append(args.output_dir)
         
         # 4. Copia file di input
         copy_input_files(args.input_csv, args.stations_csv, args.output_dir)
@@ -258,6 +376,8 @@ def run_mobile_pipeline():
         script_dir = PROJECT_ROOT / "examples" / "mobile_devices"
         if not script_dir.exists():
             logger.error(f"Directory script non trovata: {script_dir}")
+            if args.cleanup_on_error:
+                cleanup_output_directory(args.output_dir)
             sys.exit(1)
         
         # 6. Esecuzione script in sequenza
@@ -273,8 +393,10 @@ FASE 1: Georeferenziazione e pulizia dati...")
             "--stations-csv", str(args.stations_csv),
             "--output-dir", str(args.output_dir / "interim")
         ]
-        if not run_command(cmd1, cwd=str(script_dir)):
+        if not run_command(cmd1, cwd=str(script_dir), timeout=args.timeout):
             logger.error("process_pipeline.py fallito")
+            if args.cleanup_on_error:
+                cleanup_output_directory(args.output_dir)
             sys.exit(1)
         
         # 6.2. associa_eventi.py - Clustering eventi
@@ -284,8 +406,10 @@ FASE 2: Clustering eventi e creazione catalogo...")
             python_exe,
             str(script_dir / "associa_eventi.py")
         ]
-        if not run_command(cmd2, cwd=str(script_dir)):
+        if not run_command(cmd2, cwd=str(script_dir), timeout=args.timeout):
             logger.error("associa_eventi.py fallito")
+            if args.cleanup_on_error:
+                cleanup_output_directory(args.output_dir)
             sys.exit(1)
         
         # 6.3. prepara_ml.py - Feature engineering
@@ -295,8 +419,10 @@ FASE 3: Feature engineering per ML...")
             python_exe,
             str(script_dir / "prepara_ml.py")
         ]
-        if not run_command(cmd3, cwd=str(script_dir)):
+        if not run_command(cmd3, cwd=str(script_dir), timeout=args.timeout * 2):
             logger.error("prepara_ml.py fallito")
+            if args.cleanup_on_error:
+                cleanup_output_directory(args.output_dir)
             sys.exit(1)
         
         # 6.4. train_modello.py - Training e allarmi
@@ -313,8 +439,10 @@ FASE 4: Training modello e generazione allarmi...")
         if args.model_type:
             cmd4.extend(["--model-type", args.model_type])
         
-        if not run_command(cmd4, cwd=str(script_dir)):
+        if not run_command(cmd4, cwd=str(script_dir), timeout=args.timeout * 3):
             logger.error("train_modello.py fallito")
+            if args.cleanup_on_error:
+                cleanup_output_directory(args.output_dir)
             sys.exit(1)
         
         # 7. Copia output in directory finale
@@ -331,7 +459,6 @@ Copia output in directory finale...")
             src = script_dir / file
             dst = args.output_dir / "output" / file
             if src.exists():
-                import shutil
                 shutil.copy(src, dst)
                 logger.info(f"   Copiato: {file}")
         
@@ -343,13 +470,11 @@ Copia modelli e log allarmi...")
         
         if model_dir.exists():
             for model_file in model_dir.glob("*"):
-                import shutil
                 shutil.copy(model_file, args.output_dir / "models" / model_file.name)
                 logger.info(f"   Modello: {model_file.name}")
         
         if alerts_dir.exists():
             for alert_file in alerts_dir.glob("*"):
-                import shutil
                 shutil.copy(alert_file, args.output_dir / "alerts" / alert_file.name)
                 logger.info(f"   Allarmi: {alert_file.name}")
         
@@ -365,11 +490,37 @@ Copia modelli e log allarmi...")
         
         return True
         
+    except subprocess.TimeoutExpired as exc:
+        logger.error(f"❌ Timeout superato: {exc}")
+        if args.cleanup_on_error:
+            cleanup_output_directory(args.output_dir)
+        return False
+    except DataValidationError as exc:
+        logger.error(f"❌ Validazione dati fallita: {exc.message}")
+        for err in exc.errors:
+            logger.error(f"   {err}")
+        if args.cleanup_on_error:
+            cleanup_output_directory(args.output_dir)
+        return False
+    except FileNotFoundError as exc:
+        logger.error(f"❌ File non trovato: {exc}")
+        if args.cleanup_on_error:
+            cleanup_output_directory(args.output_dir)
+        return False
+    except subprocess.CalledProcessError as exc:
+        logger.error(f"❌ Comando fallito con codice {exc.returncode}")
+        if args.cleanup_on_error:
+            cleanup_output_directory(args.output_dir)
+        return False
     except KeyboardInterrupt:
         logger.warning("Pipeline interrotta dall'utente")
+        if args.cleanup_on_error:
+            cleanup_output_directory(args.output_dir)
         return False
     except Exception as e:
-        logger.error(f"Errore critico: {str(e)}", exc_info=True)
+        logger.error(f"❌ Errore critico: {str(e)}", exc_info=True)
+        if args.cleanup_on_error:
+            cleanup_output_directory(args.output_dir)
         return False
 
 
