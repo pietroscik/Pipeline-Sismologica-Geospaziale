@@ -6,12 +6,13 @@ from pathlib import Path
 
 from obspy.clients.fdsn import Client
 from obspy import read_inventory
+from utils import get_project_root
 
 
 NETWORK = "IV"
 STATIONS = ["CFB1", "CFB2", "CFB3", "CFSB", "POPT"]
-STATIONXML_PATH = Path("CampiFlegrei_StationXML.xml")
-STATION_CSV_PATH = Path("stations.csv")
+STATIONXML_PATH = get_project_root() / "CampiFlegrei_StationXML.xml"
+STATION_CSV_PATH = get_project_root() / "stations.csv"
 
 
 def fetch_stationxml() -> None:
