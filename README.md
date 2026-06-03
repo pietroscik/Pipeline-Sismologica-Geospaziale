@@ -19,7 +19,7 @@ Gli script sono pensati per operare in sequenza. La pipeline si divide in 4 fasi
     Genera un file di testo contenente solo le stazioni all'interno dell'area di interesse, ottimizzando i tempi di download ed elaborazione successivi.
 
 ### Fase 1: Acquisizione ed Esplorazione Forme d'Onda (FDSN)
-*   **`scripts/download_waveforms.py`**
+*   **`scripts/download_cf_waveforms.py`**
     Interroga i server FDSN per scaricare massivamente le forme d'onda in formato MiniSEED, basandosi sulle reti e stazioni definite in `config.yaml`. 
     Permette personalizzazioni avanzate via CLI (canali, intervalli di date). Utile la modalità `--dry-run` per ispezionare i file che verranno scaricati senza pesare sulla rete.
 *   **`scripts/analyze_trace.py`**
@@ -65,19 +65,38 @@ python run_pipeline.py
 
 # Esecuzione con nome personalizzato
 python run_pipeline.py --run-name flegrei_2023
+
+# Esecuzione con il dataset dimostrativo legacy integrato nel progetto
+python run_pipeline.py --run-name demo_legacy --start-phase 0 \
+  --delta-csv examples/mobile_devices/scoperte_automatiche.csv.gz \
+  --stations-csv examples/mobile_devices/stations.csv
 ```
 
 In alternativa, ecco un esempio di esecuzione manuale dei singoli script:
 
 ```bash
 # 0. Seleziona le stazioni nel raggio di 20km dalle coordinate 40.82, 14.14
-python scripts/select_stations_spatial.py --point 40.82 14.14 20.0
+python scripts/select_stations_spatial.py --input-csv examples/mobile_devices/stations.csv --point 40.82 14.14 20.0 --output-file runs/demo_legacy/selected_stations.txt
 
-# 1. Calcola le coordinate piane (UTM 33N)
-python scripts/attach_coords_to_deltas.py --delta-csv runs/flegrei_2023/processed/station_stats.csv --stations-csv data/raw/stations.csv --output-csv runs/flegrei_2023/processed/deltas_spatial.csv --value-column base_mean
+# 1. Genera le statistiche di stazione dal CSV legacy integrato
+python scripts/compute_station_stats.py \
+  --base-csv examples/mobile_devices/scoperte_automatiche.csv.gz \
+  --output-csv runs/demo_legacy/processed/station_stats.csv \
+  --stations-file runs/demo_legacy/selected_stations.txt
 
-# 2. Avvia la produzione grafica e GIS
-python scripts/analyze_delta_map.py --delta-csv runs/flegrei_2023/processed/deltas_spatial.csv --outdir runs/flegrei_2023/maps --export-geotiff --export-shapefile
+# 2. Calcola le coordinate metriche
+python scripts/attach_coords_to_deltas.py \
+  --delta-csv runs/demo_legacy/processed/station_stats.csv \
+  --stations-csv examples/mobile_devices/stations.csv \
+  --output-csv runs/demo_legacy/processed/deltas_spatial.csv \
+  --value-column base_mean
+
+# 3. Avvia la produzione grafica e GIS
+python scripts/analyze_delta_map.py \
+  --delta-csv runs/demo_legacy/processed/deltas_spatial.csv \
+  --outdir runs/demo_legacy/maps \
+  --export-geotiff \
+  --export-shapefile
 ```
 
 
@@ -113,3 +132,13 @@ Le seguenti librerie sono necessarie solo per l'interfaccia Streamlit:
 - streamlit-folium (>=0.11.0)
 
 > Nota: Se non intendi usare l'interfaccia web, puoi omettere l'installazione di queste dipendenze.
+
+## Esempi Legacy Integrati
+
+Il progetto include un dataset dimostrativo e script esplorativi storici in `examples/mobile_devices/`.
+Contengono:
+- `scoperte_automatiche.csv.gz` come input già pronto per la pipeline
+- `stations.csv` con le coordinate delle stazioni
+- cataloghi, report e script di analisi avanzata usati per ispezioni, trend, b-value e ML
+
+Questa cartella non sostituisce la pipeline principale, ma fornisce un riferimento pratico per testare subito l'orchestratore e l'interfaccia Streamlit con dati reali già presenti nel repo.

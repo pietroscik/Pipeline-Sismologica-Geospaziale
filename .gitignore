@@ -12,6 +12,8 @@ __pycache__/
 data/raw/
 data/interim/
 data/processed/
+examples/mobile_devices/output_eventi_georeferenziati.csv
+examples/mobile_devices/scoperte_automatiche.csv
 
 # Mappe, GIS e risultati generati
 results/

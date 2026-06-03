@@ -39,6 +39,11 @@ def parse_args() -> argparse.Namespace:
         default=10,
         help="Esclude stazioni con meno di questa numerosità (default 10).",
     )
+    parser.add_argument(
+        "--stations-file",
+        type=Path,
+        help="File TXT opzionale con i codici stazione da mantenere (uno per riga).",
+    )
     return parser.parse_args()
 
 
@@ -80,10 +85,27 @@ def main() -> None:
     args = parse_args()
 
     base_df = load_delta_csv(args.base_csv, args.channel)
+    if args.stations_file:
+        if not args.stations_file.exists():
+            raise SystemExit(f"File stazioni non trovato: {args.stations_file}")
+        allowed_stations = {
+            line.strip().upper()
+            for line in args.stations_file.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        if allowed_stations:
+            base_df = base_df[base_df["station"].astype(str).str.upper().isin(allowed_stations)]
+            if base_df.empty:
+                raise SystemExit("Filtrando per stazioni non resta alcuna osservazione nel CSV base.")
+
     base_stats = summarize(base_df, "base")
 
     if args.soft_csv:
         soft_df = load_delta_csv(args.soft_csv, args.channel)
+        if args.stations_file and not soft_df.empty:
+            soft_df = soft_df[soft_df["station"].astype(str).str.upper().isin(allowed_stations)]
+            if soft_df.empty:
+                raise SystemExit("Filtrando per stazioni non resta alcuna osservazione nel CSV soft.")
         soft_stats = summarize(soft_df, "soft")
         stats = base_stats.merge(soft_stats, on="station", how="outer")
         stats["soft_minus_base_mean"] = stats["soft_mean"] - stats["base_mean"]

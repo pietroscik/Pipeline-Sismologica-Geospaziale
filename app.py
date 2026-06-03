@@ -13,6 +13,7 @@ import streamlit as st
 st.set_page_config(page_title="Pipeline Sismologica", page_icon="🌋", layout="wide")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+EXAMPLE_LEGACY_DIR = PROJECT_ROOT / "examples" / "mobile_devices"
 
 @st.cache_data(show_spinner=False)
 def load_spatial_data(csv_path: str, mtime: float) -> pd.DataFrame:
@@ -39,26 +40,25 @@ with st.sidebar:
     )
     
     if use_existing_files == "File locali":
-        data_raw_dir = PROJECT_ROOT / "data" / "raw"
         events_csv = st.text_input(
             "Percorso Events CSV",
-            value=str(data_raw_dir / "science.adw9038_data_s1.csv"),
-            help="Percorso al file CSV degli eventi (es: data/raw/events.csv)"
+            value="",
+            help="Se non hai un catalogo eventi/picks, puoi usare direttamente il delta di esempio."
         )
         picks_csv = st.text_input(
             "Percorso Picks CSV",
-            value=str(data_raw_dir / "science.adw9038_data_s2.csv"),
-            help="Percorso al file CSV dei picks (es: data/raw/picks.csv)"
+            value="",
+            help="Facoltativo se fornisci già un file delta pre-elaborato."
         )
         stations_csv = st.text_input(
             "Percorso Stations CSV",
-            value=str(data_raw_dir / "stations.csv"),
-            help="Percorso al file CSV delle stazioni (es: data/raw/stations.csv)"
+            value=str(EXAMPLE_LEGACY_DIR / "stations.csv"),
+            help="Catalogo stazioni usato dalla pipeline e dall'esempio legacy integrato."
         )
         delta_csv = st.text_input(
             "Percorso Delta CSV (opzionale)",
-            value="",
-            help="Percorso al file CSV pre-processato con i delta. Se fornito, salta le fasi 0-2"
+            value=str(EXAMPLE_LEGACY_DIR / "scoperte_automatiche.csv.gz"),
+            help="CSV gzip già pronto con i delta. Con il dataset di esempio la pipeline parte subito."
         )
     else:
         # File uploaders per caricare nuovi file
@@ -95,7 +95,7 @@ with st.sidebar:
                     f.write(uploaded_events.getbuffer())
                 st.success(f"Events CSV salvato in {events_csv}")
             else:
-                events_csv = str(data_raw_dir / "science.adw9038_data_s1.csv")
+                events_csv = ""
                 
             if uploaded_picks:
                 picks_csv = str(data_raw_dir / uploaded_picks.name)
@@ -103,7 +103,7 @@ with st.sidebar:
                     f.write(uploaded_picks.getbuffer())
                 st.success(f"Picks CSV salvato in {picks_csv}")
             else:
-                picks_csv = str(data_raw_dir / "science.adw9038_data_s2.csv")
+                picks_csv = ""
                 
             if uploaded_stations:
                 stations_csv = str(data_raw_dir / uploaded_stations.name)
@@ -111,7 +111,7 @@ with st.sidebar:
                     f.write(uploaded_stations.getbuffer())
                 st.success(f"Stations CSV salvato in {stations_csv}")
             else:
-                stations_csv = str(data_raw_dir / "stations.csv")
+                stations_csv = ""
                 
             if uploaded_delta:
                 delta_csv = str(data_raw_dir / uploaded_delta.name)

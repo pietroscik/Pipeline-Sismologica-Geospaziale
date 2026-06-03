@@ -119,7 +119,11 @@ if [ "$START_PHASE" -le 2 ] && [ "$SKIP_PHASE2" = false ]; then
         OUT_STATION_STATS="$DATA_PROCESSED/station_stats.csv"
         echo ""
         echo "[Fase 2] Calcolo statistiche..."
-        python "$SCRIPTS_DIR/compute_station_stats.py" --base-csv "$OUT_STATION_DELTAS" --output-csv "$OUT_STATION_STATS"
+        CMD="python $SCRIPTS_DIR/compute_station_stats.py --base-csv $OUT_STATION_DELTAS --output-csv $OUT_STATION_STATS"
+        if [ -f "$SELECTED_STATIONS_TXT" ]; then
+            CMD="$CMD --stations-file $SELECTED_STATIONS_TXT"
+        fi
+        eval "$CMD"
     else
         if file_exists "$EVENTS_CSV" && file_exists "$PICKS_CSV"; then
             OUT_STATION_DELTAS="$DATA_INTERIM/station_deltas.csv"
@@ -133,7 +137,11 @@ if [ "$START_PHASE" -le 2 ] && [ "$SKIP_PHASE2" = false ]; then
             OUT_STATION_STATS="$DATA_PROCESSED/station_stats.csv"
             echo ""
             echo "[Fase 2 - Step 2] Aggregazione statistiche..."
-            python "$SCRIPTS_DIR/compute_station_stats.py" --base-csv "$OUT_STATION_DELTAS" --output-csv "$OUT_STATION_STATS"
+            CMD="python $SCRIPTS_DIR/compute_station_stats.py --base-csv $OUT_STATION_DELTAS --output-csv $OUT_STATION_STATS"
+            if [ -f "$SELECTED_STATIONS_TXT" ]; then
+                CMD="$CMD --stations-file $SELECTED_STATIONS_TXT"
+            fi
+            eval "$CMD"
             echo "Fase 2 completata."
         else
             echo "Per Fase 2 servono --events-csv e --picks-csv o --delta-csv."
