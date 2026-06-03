@@ -13,7 +13,7 @@ import rasterio
 from rasterio.transform import from_bounds
 from scipy.interpolate import griddata
 
-from utils import load_csv_with_checks, setup_logger, load_config
+from utils import load_csv_with_checks, setup_logger, load_config, get_project_root
 
 logger = setup_logger("analyze_map")
 
@@ -191,6 +191,15 @@ def plot_anomaly_clusters(
     plt.close(fig)
 
 
+def resolve_outdir(outdir: Optional[Path]) -> Optional[Path]:
+    """Resolve outdir against project root if it's a relative path."""
+    if outdir is None:
+        return None
+    if not outdir.is_absolute():
+        return get_project_root() / outdir
+    return outdir
+
+
 def main() -> None:
     config = load_config()
     map_cfg = config.get("mapping", {})
@@ -243,9 +252,8 @@ def main() -> None:
 
     df = load_delta_csv(args.delta_csv)
 
-    outdir = None
-    if args.outdir:
-        outdir = args.outdir
+    outdir = resolve_outdir(args.outdir)
+    if outdir:
         outdir.mkdir(parents=True, exist_ok=True)
 
     plot_scatter(df, outdir, args.title_suffix)
