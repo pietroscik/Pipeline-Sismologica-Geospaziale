@@ -13,6 +13,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "mobile"))
 from alert_system import AlertSystem, get_alert_system
 from logging_config import setup_logging
+from data_validator import (
+    validate_csv_file,
+    validate_data,
+    DataValidationError
+)
 
 # Configura logging
 logger = logging.getLogger(__name__)
@@ -26,10 +31,60 @@ DEFAULT_ALERT_THRESHOLD = 0.7
 def load_data(dataset_path: str = "dataset_ml_sismico.csv") -> pd.DataFrame:
     """Carica il dataset per il training."""
     logger.info(f"📖 Caricamento dataset da {dataset_path}...")
-    df = pd.read_csv(dataset_path, index_col='Tempo')
-    df.index = pd.to_datetime(df.index)
     
+    dataset_path = Path(dataset_path)
+    
+    # Validate file exists and is readable
+    if not dataset_path.exists():
+        raise FileNotFoundError(f"Dataset file non trovato: {dataset_path}")
+    if dataset_path.stat().st_size == 0:
+        raise DataValidationError("Dataset file e' vuoto", errors=["Dataset file is empty"])
+    
+    # Load and validate CSV
+    try:
+        df = validate_csv_file(
+            dataset_path,
+            required_columns={'Target_Allarme'}
+        )
+    except DataValidationError as e:
+        logger.error(f"❌ Validazione dataset fallita: {e.message}")
+        for err in e.errors:
+            logger.error(f"   {err}")
+        raise
+    
+    # Convert datetime index
+    if 'Tempo' in df.columns:
+        df['Tempo'] = pd.to_datetime(df['Tempo'])
+        df.set_index('Tempo', inplace=True)
+    elif df.index.name is None or df.index.name == 'Unnamed: 0':
+        # Try to find datetime column
+        datetime_cols = [col for col in df.columns if 'time' in col.lower() or 'tempo' in col.lower()]
+        if datetime_cols:
+            df[datetime_cols[0]] = pd.to_datetime(df[datetime_cols[0]])
+            df.set_index(datetime_cols[0], inplace=True)
+        else:
+            logger.warning("Nessuna colonna temporale trovata, uso indice numerico")
+    
+    # Sort by index
+    df.sort_index(inplace=True)
+    
+    # Check for empty DataFrame
+    if len(df) == 0:
+        raise DataValidationError("Dataset e' vuoto", errors=["Dataset contains no rows"])
+    
+    # Check for valid target values
+    if 'Target_Allarme' not in df.columns:
+        raise DataValidationError("Colonna Target_Allarme non trovata", errors=["Target column missing"])
+    
+    # Check class balance
+    target_counts = df['Target_Allarme'].value_counts()
     logger.info(f"✅ Caricati {len(df)} record con {len(df.columns)} feature")
+    logger.info(f"   Distribuzione target: {dict(target_counts)}")
+    
+    # Warn if dataset is too small
+    if len(df) < 100:
+        logger.warning(f"Dataset molto piccolo ({len(df)} record), risultati potrebbero non essere affidabili")
+    
     return df
 
 
@@ -44,12 +99,34 @@ def split_data_temporal(df: pd.DataFrame, test_size: float = 0.2, random_state: 
     
     Returns:
         train, test: DataFrame di training e test
+    
+    Raises:
+        DataValidationError: Se il dataset e' troppo piccolo
     """
+    if len(df) == 0:
+        raise DataValidationError("Dataset vuoto, impossibile suddividere", errors=["Empty dataset"])
+    
+    # Check test_size is valid
+    if not 0 < test_size < 1:
+        raise ValueError(f"test_size deve essere compreso tra 0 e 1, ricevuto: {test_size}")
+    
     # Calcola il punto di split
     split_idx = int(len(df) * (1 - test_size))
     
+    if split_idx == 0:
+        raise DataValidationError(
+            "Dataset troppo piccolo per suddivisione",
+            errors=[f"Dataset has only {len(df)} rows, need at least {int(1/test_size)}"]
+        )
+    
     train = df.iloc[:split_idx].copy()
     test = df.iloc[split_idx:].copy()
+    
+    # Validate splits
+    if len(train) == 0:
+        raise DataValidationError("Train set vuoto dopo split")
+    if len(test) == 0:
+        raise DataValidationError("Test set vuoto dopo split")
     
     logger.info(f"📚 Train: {len(train)} record, Test: {len(test)} record")
     return train, test
@@ -70,9 +147,19 @@ def prepare_features(
     
     Returns:
         X, y: Feature matrix e target vector
+    
+    Raises:
+        DataValidationError: Se ci sono problemi con i dati
     """
     if drop_columns is None:
         drop_columns = []
+    
+    # Check target column exists
+    if target_column not in df.columns:
+        raise DataValidationError(
+            f"Colonna target '{target_column}' non trovata",
+            errors=[f"Target column '{target_column}' not found in DataFrame"]
+        )
     
     # Aggiungi colonne da escludere
     exclude = drop_columns + [target_column]
@@ -80,8 +167,29 @@ def prepare_features(
     # Seleziona feature
     feature_columns = [col for col in df.columns if col not in exclude]
     
+    if len(feature_columns) == 0:
+        raise DataValidationError(
+            "Nessuna feature disponibile dopo esclusione colonne",
+            errors=["No features available after excluding target and drop columns"]
+        )
+    
     X = df[feature_columns].copy()
     y = df[target_column].copy()
+    
+    # Check for NaN in target
+    if y.isna().any():
+        nan_count = y.isna().sum()
+        logger.warning(f"{nan_count} valori NaN nella colonna target, saranno rimossi")
+        # Remove rows with NaN in target
+        valid_idx = y.notna()
+        X = X[valid_idx]
+        y = y[valid_idx]
+    
+    # Check for NaN in features
+    nan_features = X.isna().any()
+    if nan_features.any():
+        nan_cols = nan_features[nan_features].index.tolist()
+        logger.warning(f"Colonne con NaN: {nan_cols}")
     
     logger.info(f"⚙️  Feature selezionate: {len(feature_columns)}")
     logger.debug(f"Feature: {feature_columns}")
@@ -115,14 +223,29 @@ def train_xgboost(
     Returns:
         model: Modello addestrato
         results: Dizionario con metriche e parametri
+    
+    Raises:
+        ImportError: Se XGBoost non e' installato
+        DataValidationError: Se ci sono problemi con i dati
     """
     try:
         import xgboost as xgb
     except ImportError:
         logger.error("XGBoost non installato. Installa con: pip install xgboost")
-        raise
+        raise ImportError("XGBoost library not installed")
     
     logger.info("🌲 Addestramento modello XGBoost...")
+    
+    # Check for empty data
+    if len(X_train) == 0 or len(y_train) == 0:
+        raise DataValidationError("Dati di training vuoti")
+    
+    # Check for single class
+    if len(y_train.unique()) < 2:
+        raise DataValidationError(
+            "Solo una classe nel target",
+            errors=[f"Target has only one class: {y_train.unique()}"]
+        )
     
     # Converte in DMatrix (formato ottimizzato per XGBoost)
     dtrain = xgb.DMatrix(X_train, label=y_train)
@@ -139,8 +262,11 @@ def train_xgboost(
     # Early stopping se dati di test forniti
     evals = []
     if X_test is not None and y_test is not None:
-        dtest = xgb.DMatrix(X_test, label=y_test)
-        evals = [(dtrain, "train"), (dtest, "eval")]
+        if len(X_test) == 0 or len(y_test) == 0:
+            logger.warning("Test set vuoto, early stopping disabilitato")
+        else:
+            dtest = xgb.DMatrix(X_test, label=y_test)
+            evals = [(dtrain, "train"), (dtest, "eval")]
     else:
         evals = [(dtrain, "train")]
     
@@ -161,8 +287,10 @@ def train_xgboost(
     # Calcola metriche su test (se disponibile)
     test_results = {}
     if X_test is not None and y_test is not None:
-        test_pred = model.predict(dtest)
-        test_results = calculate_metrics(y_test, test_pred, prefix="test_")
+        if len(X_test) > 0 and len(y_test) > 0:
+            dtest = xgb.DMatrix(X_test, label=y_test)
+            test_pred = model.predict(dtest)
+            test_results = calculate_metrics(y_test, test_pred, prefix="test_")
     
     results = {
         "model_type": "xgboost",
@@ -202,10 +330,29 @@ def train_random_forest(
     Returns:
         model: Modello addestrato
         results: Dizionario con metriche e parametri
+    
+    Raises:
+        ImportError: Se scikit-learn non e' installato
+        DataValidationError: Se ci sono problemi con i dati
     """
-    from sklearn.ensemble import RandomForestClassifier
+    try:
+        from sklearn.ensemble import RandomForestClassifier
+    except ImportError:
+        logger.error("scikit-learn non installato. Installa con: pip install scikit-learn")
+        raise ImportError("scikit-learn library not installed")
     
     logger.info("🌳 Addestramento modello Random Forest...")
+    
+    # Check for empty data
+    if len(X_train) == 0 or len(y_train) == 0:
+        raise DataValidationError("Dati di training vuoti")
+    
+    # Check for single class
+    if len(y_train.unique()) < 2:
+        raise DataValidationError(
+            "Solo una classe nel target",
+            errors=[f"Target has only one class: {y_train.unique()}"]
+        )
     
     model = RandomForestClassifier(
         n_estimators=n_estimators,
@@ -225,8 +372,9 @@ def train_random_forest(
     # Calcola metriche su test (se disponibile)
     test_results = {}
     if X_test is not None and y_test is not None:
-        test_pred = model.predict_proba(X_test)[:, 1]
-        test_results = calculate_metrics(y_test, test_pred, prefix="test_")
+        if len(X_test) > 0 and len(y_test) > 0:
+            test_pred = model.predict_proba(X_test)[:, 1]
+            test_results = calculate_metrics(y_test, test_pred, prefix="test_")
     
     # Calcola feature importance
     feature_importance = dict(zip(X_train.columns, model.feature_importances_))
@@ -265,23 +413,72 @@ def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "") -
         classification_report
     )
     
+    # Check for valid inputs
+    if len(y_true) == 0:
+        logger.warning("y_true vuoto, metriche non calcolabili")
+        return {}
+    
+    if len(y_pred) == 0:
+        logger.warning("y_pred vuoto, metriche non calcolabili")
+        return {}
+    
+    if len(y_true) != len(y_pred):
+        logger.warning(f"Dimensione mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}")
+        return {}
+    
     # Converte predizioni in classi (soglia 0.5)
     y_pred_class = (y_pred >= 0.5).astype(int)
     
     # Matrice di confusione
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred_class).ravel()
     
+    # Calculate metrics safely
+    try:
+        accuracy = accuracy_score(y_true, y_pred_class)
+    except:
+        accuracy = 0.0
+    
+    try:
+        precision = precision_score(y_true, y_pred_class, zero_division=0)
+    except:
+        precision = 0.0
+    
+    try:
+        recall = recall_score(y_true, y_pred_class, zero_division=0)
+    except:
+        recall = 0.0
+    
+    try:
+        f1 = f1_score(y_true, y_pred_class, zero_division=0)
+    except:
+        f1 = 0.0
+    
+    try:
+        roc_auc = roc_auc_score(y_true, y_pred) if len(np.unique(y_true)) > 1 else 0.5
+    except:
+        roc_auc = 0.5
+    
+    try:
+        avg_precision = average_precision_score(y_true, y_pred) if len(np.unique(y_true)) > 1 else 0.5
+    except:
+        avg_precision = 0.5
+    
+    try:
+        class_report = classification_report(y_true, y_pred_class, output_dict=True)
+    except:
+        class_report = {}
+    
     metrics = {
-        f"{prefix}accuracy": accuracy_score(y_true, y_pred_class),
-        f"{prefix}precision": precision_score(y_true, y_pred_class, zero_division=0),
-        f"{prefix}recall": recall_score(y_true, y_pred_class, zero_division=0),
-        f"{prefix}f1_score": f1_score(y_true, y_pred_class, zero_division=0),
-        f"{prefix}roc_auc": roc_auc_score(y_true, y_pred) if len(np.unique(y_true)) > 1 else 0.5,
-        f"{prefix}average_precision": average_precision_score(y_true, y_pred) if len(np.unique(y_true)) > 1 else 0.5,
+        f"{prefix}accuracy": accuracy,
+        f"{prefix}precision": precision,
+        f"{prefix}recall": recall,
+        f"{prefix}f1_score": f1,
+        f"{prefix}roc_auc": roc_auc,
+        f"{prefix}average_precision": avg_precision,
         f"{prefix}confusion_matrix": {
             "tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)
         },
-        f"{prefix}classification_report": classification_report(y_true, y_pred_class, output_dict=True)
+        f"{prefix}classification_report": class_report
     }
     
     return metrics
@@ -305,11 +502,28 @@ def find_optimal_threshold(
     Returns:
         best_threshold: Soglia ottimale
         results: Metriche per ogni soglia
+    
+    Raises:
+        DataValidationError: Se i dati sono vuoti
     """
     logger.info("⚙️  Ricerca soglia ottimale...")
     
+    # Check for empty data
+    if len(X) == 0 or len(y) == 0:
+        raise DataValidationError("Dati vuoti per ricerca soglia")
+    
     # Predici probabilità
-    y_pred = model.predict_proba(X)[:, 1] if hasattr(model, "predict_proba") else model.predict(X)
+    try:
+        if hasattr(model, "predict_proba"):
+            y_pred = model.predict_proba(X)[:, 1]
+        else:
+            # Per XGBoost
+            import xgboost as xgb
+            dmatrix = xgb.DMatrix(X)
+            y_pred = model.predict(dmatrix)
+    except Exception as e:
+        logger.error(f"Errore predizione: {e}")
+        raise
     
     # Genera soglie da testare
     thresholds = np.linspace(0, 1, n_thresholds)
@@ -322,14 +536,16 @@ def find_optimal_threshold(
         y_pred_class = (y_pred >= threshold).astype(int)
         
         # Calcola F1-score
-        from sklearn.metrics import f1_score
+        from sklearn.metrics import f1_score, precision_score, recall_score
         f1 = f1_score(y, y_pred_class, zero_division=0)
+        precision = precision_score(y, y_pred_class, zero_division=0)
+        recall = recall_score(y, y_pred_class, zero_division=0)
         
         threshold_results.append({
             "threshold": float(threshold),
             "f1_score": float(f1),
-            "precision": float(precision_score(y, y_pred_class, zero_division=0)),
-            "recall": float(recall_score(y, y_pred_class, zero_division=0))
+            "precision": float(precision),
+            "recall": float(recall)
         })
         
         if f1 > best_f1:
@@ -358,20 +574,33 @@ def save_model(
     
     Returns:
         Path al file salvato
+    
+    Raises:
+        Exception: Se c'e' un errore nel salvataggio
     """
-    model_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        model_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.error(f"Errore creazione directory modelli: {e}")
+        raise
     
     # Salva modello
     model_path = model_dir / f"{model_name}.pkl"
-    joblib.dump(model, model_path)
+    try:
+        joblib.dump(model, model_path)
+    except Exception as e:
+        logger.error(f"Errore salvataggio modello: {e}")
+        raise
     
     # Salva metadati
     if metadata:
         metadata_path = model_dir / f"{model_name}_metadata.json"
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2, default=str)
-        
-        logger.info(f"💾 Metadati salvati in {metadata_path}")
+        try:
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2, default=str)
+            logger.info(f"💾 Metadati salvati in {metadata_path}")
+        except Exception as e:
+            logger.warning(f"Errore salvataggio metadati: {e}")
     
     logger.info(f"💾 Modello salvato in {model_path}")
     return model_path
@@ -387,8 +616,19 @@ def load_model(model_path: Path) -> Tuple[Any, Optional[Dict]]:
     Returns:
         model: Modello caricato
         metadata: Metadati (se disponibili)
+    
+    Raises:
+        FileNotFoundError: Se il modello non esiste
+        Exception: Se c'e' un errore nel caricamento
     """
-    model = joblib.load(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(f"Modello non trovato: {model_path}")
+    
+    try:
+        model = joblib.load(model_path)
+    except Exception as e:
+        logger.error(f"Errore caricamento modello: {e}")
+        raise
     
     # Prova a caricare metadati
     metadata_path = model_path.parent / f"{model_path.stem}_metadata.json"
@@ -419,20 +659,37 @@ def calculate_risk_index(
     
     Returns:
         risk_index: Array con indici di rischio (0-1)
+    
+    Raises:
+        Exception: Se c'e' un errore nella predizione
     """
+    # Check for empty data
+    if len(X) == 0:
+        logger.warning("X e' vuoto, restituisco array vuoto")
+        return np.array([])
+    
     # Applica scaler se fornito
     if scaler is not None:
-        X_scaled = scaler.transform(X)
+        try:
+            X_scaled = scaler.transform(X)
+        except Exception as e:
+            logger.error(f"Errore applicazione scaler: {e}")
+            raise
     else:
         X_scaled = X
     
     # Predici probabilità
-    if hasattr(model, "predict_proba"):
-        risk_index = model.predict_proba(X_scaled)[:, 1]
-    else:
-        # Per modelli che non hanno predict_proba (es. XGBoost DMatrix)
-        dmatrix = xgb.DMatrix(X_scaled) if hasattr(model, "predict") else X_scaled
-        risk_index = model.predict(dmatrix)
+    try:
+        if hasattr(model, "predict_proba"):
+            risk_index = model.predict_proba(X_scaled)[:, 1]
+        else:
+            # Per XGBoost
+            import xgboost as xgb
+            dmatrix = xgb.DMatrix(X_scaled)
+            risk_index = model.predict(dmatrix)
+    except Exception as e:
+        logger.error(f"Errore predizione: {e}")
+        raise
     
     return risk_index
 
@@ -560,6 +817,20 @@ def main():
             print(f"
 ✅ Nessun allarme supera la soglia ottimale")
         
+    except DataValidationError as e:
+        logger.error(f"❌ Validazione dati fallita: {e.message}")
+        for err in e.errors:
+            logger.error(f"   {err}")
+        alert_system.trigger_error_alert(e, "train_modello.py")
+        raise
+    except ImportError as e:
+        logger.error(f"❌ Libreria mancante: {e}")
+        alert_system.trigger_error_alert(e, "train_modello.py")
+        raise
+    except FileNotFoundError as e:
+        logger.error(f"❌ File non trovato: {e}")
+        alert_system.trigger_error_alert(e, "train_modello.py")
+        raise
     except Exception as e:
         logger.error(f"❌ Errore critico in train_modello.py: {str(e)}", exc_info=True)
         alert_system.trigger_error_alert(e, "train_modello.py")
