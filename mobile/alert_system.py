@@ -10,8 +10,11 @@ Environment Variables:
     - WEBHOOK_URL, WEBHOOK_ENABLED
     - TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, SMS_TO_NUMBERS, SMS_ENABLED
     - ALERT_THRESHOLD_LOW, ALERT_THRESHOLD_MEDIUM, ALERT_THRESHOLD_HIGH, ALERT_THRESHOLD_CRITICAL
+    - ENVIRONMENT (dev, prod, test) for multi-environment configuration
+    - ENCRYPTION_KEY for optional credential encryption
     
     Environment variables take precedence over YAML configuration.
+    Multi-environment configuration loads: alert_config.{environment}.yaml
 """
 
 import json
@@ -23,7 +26,7 @@ from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import yaml
 
 # Import PROJECT_ROOT for consistent path resolution
@@ -44,11 +47,16 @@ class AlertSystem:
     
     Configuration can be provided via:
     1. Environment variables (highest priority)
-    2. YAML configuration file
-    3. Direct dictionary parameter
+    2. Environment-specific YAML config file (alert_config.{ENV}.yaml)
+    3. Default YAML configuration file
+    4. Direct dictionary parameter
+    
+    Supports multi-environment configuration (dev, prod, test) via ENVIRONMENT variable.
+    Supports optional encryption for sensitive credentials.
     
     Usage:
         # Using environment variables (recommended for production)
+        os.environ['ENVIRONMENT'] = 'prod'
         alert_system = AlertSystem()
         
         # Using YAML config file
@@ -76,20 +84,58 @@ class AlertSystem:
         "CRITICAL": 0xFF0000
     }
     
+    # Required configuration keys for each channel
+    REQUIRED_CONFIG = {
+        "email": ["email_smtp", "email_port", "email_user", "email_password", "email_from"],
+        "webhook": ["webhook_url"],
+        "sms": ["sms_account_sid", "sms_auth_token", "sms_from", "sms_to"]
+    }
+    
     def __init__(self, config_path: Optional[str] = None, config: Optional[Dict] = None):
         self.config = {}
+        self.environment = os.getenv('ENVIRONMENT', 'dev').lower()
+        self.encryption_key = os.getenv('ENCRYPTION_KEY')
+        
+        # Load configuration in priority order
         if config_path is not None:
             yaml_config = self._load_yaml_config(config_path)
             self.config.update(yaml_config)
+        else:
+            # Try to load environment-specific config first
+            env_config_path = PROJECT_ROOT / "mobile" / "config" / f"alert_config.{self.environment}.yaml"
+            if env_config_path.exists():
+                env_config = self._load_yaml_config(str(env_config_path))
+                self.config.update(env_config)
+            else:
+                # Fall back to default config
+                default_config_path = PROJECT_ROOT / "mobile" / "config" / "alert_config.yaml"
+                if default_config_path.exists():
+                    default_config = self._load_yaml_config(str(default_config_path))
+                    self.config.update(default_config)
+        
+        # Load environment variables (highest priority)
         env_config = self._load_env_config()
         self.config.update(env_config)
+        
+        # Apply direct config (highest priority after env vars)
         if config is not None:
             self.config.update(config)
+        
+        # Decrypt encrypted values if encryption key is available
+        if self.encryption_key:
+            self._decrypt_config_values()
+        
         self.alerts_log: List[Dict] = []
         self.alerts_dir = PROJECT_ROOT / "mobile" / "alerts"
         self.alerts_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize channels
         self._init_channels()
-        logger.info("AlertSystem initialized")
+        
+        # Validate configuration
+        self.validate_config()
+        
+        logger.info(f"AlertSystem initialized for environment: {self.environment}")
     
     def _load_yaml_config(self, config_path: str) -> Dict:
         if config_path is None:
@@ -148,19 +194,124 @@ class AlertSystem:
             env_var = f'ALERT_THRESHOLD_{level}'
             if os.getenv(env_var):
                 try:
-                    thresholds[level] = float(os.getenv(env_var))
+                    thresholds[level.lower()] = float(os.getenv(env_var))
                 except ValueError:
                     logger.warning(f"Invalid {env_var} value: {os.getenv(env_var)}")
         if thresholds:
             config['alert_thresholds'] = thresholds
         return config
     
+    def _decrypt_config_values(self):
+        """Decrypt encrypted values in configuration if encryption key is available."""
+        try:
+            from cryptography.fernet import Fernet
+            fernet = Fernet(self.encryption_key.encode())
+            
+            # List of potentially encrypted keys
+            encrypted_keys = [
+                'email_password', 'sms_auth_token', 'sms_account_sid',
+                'webhook_url', 'email_user'
+            ]
+            
+            for key in encrypted_keys:
+                if key in self.config and isinstance(self.config[key], str):
+                    if self.config[key].startswith('ENC:'):
+                        try:
+                            decrypted = fernet.decrypt(self.config[key][4:].encode()).decode()
+                            self.config[key] = decrypted
+                            logger.info(f"Decrypted configuration key: {key}")
+                        except Exception as e:
+                            logger.warning(f"Failed to decrypt {key}: {e}")
+        except ImportError:
+            logger.warning("Cryptography library not installed. Install with: pip install cryptography")
+        except Exception as e:
+            logger.warning(f"Decryption failed: {e}")
+    
+    def _encrypt_value(self, value: str) -> str:
+        """Encrypt a sensitive value for storage."""
+        try:
+            from cryptography.fernet import Fernet
+            if not self.encryption_key:
+                raise ValueError("ENCRYPTION_KEY environment variable not set")
+            fernet = Fernet(self.encryption_key.encode())
+            encrypted = fernet.encrypt(value.encode())
+            return f"ENC:{encrypted.decode()}"
+        except ImportError:
+            raise ImportError("Cryptography library not installed. Install with: pip install cryptography")
+        except Exception as e:
+            raise ValueError(f"Encryption failed: {e}")
+    
+    def encrypt_credential(self, key: str, value: str) -> str:
+        """Encrypt a credential and return the encrypted string."""
+        encrypted = self._encrypt_value(value)
+        logger.info(f"Encrypted credential for {key}")
+        return encrypted
+    
+    def validate_config(self) -> Tuple[bool, List[str]]:
+        """
+        Validate the configuration to ensure all required credentials are present.
+        
+        Returns:
+            Tuple of (is_valid, list_of_errors)
+        """
+        errors = []
+        
+        # Check email configuration if enabled
+        if self.config.get("email_enabled", False):
+            email_required = self.REQUIRED_CONFIG.get("email", [])
+            for key in email_required:
+                value = self.config.get(key)
+                if not value or (isinstance(value, list) and not value):
+                    errors.append(f"Email configuration incomplete: {key} is required but not set")
+            # Also check SMTP_TO_ADDRS
+            if not self.config.get("email_to"):
+                errors.append("Email configuration incomplete: email_to (SMTP_TO_ADDRS) is required")
+        
+        # Check webhook configuration if enabled
+        if self.config.get("webhook_enabled", False):
+            webhook_required = self.REQUIRED_CONFIG.get("webhook", [])
+            for key in webhook_required:
+                value = self.config.get(key)
+                if not value:
+                    errors.append(f"Webhook configuration incomplete: {key} is required but not set")
+        
+        # Check SMS configuration if enabled
+        if self.config.get("sms_enabled", False):
+            sms_required = self.REQUIRED_CONFIG.get("sms", [])
+            for key in sms_required:
+                value = self.config.get(key)
+                if not value or (isinstance(value, list) and not value):
+                    errors.append(f"SMS configuration incomplete: {key} is required but not set")
+        
+        # Check if at least one channel is enabled
+        if not any([
+            self.config.get("email_enabled", False),
+            self.config.get("webhook_enabled", False),
+            self.config.get("sms_enabled", False)
+        ]):
+            errors.append("At least one notification channel (email, webhook, or SMS) must be enabled")
+        
+        # Log warnings for each error
+        for error in errors:
+            logger.warning(error)
+        
+        if errors:
+            logger.warning(f"Configuration validation failed with {len(errors)} error(s)")
+        else:
+            logger.info("Configuration validation passed")
+        
+        return (len(errors) == 0, errors)
+    
     def _init_channels(self):
         self.email_enabled = self.config.get("email_enabled", False)
         self.webhook_enabled = self.config.get("webhook_enabled", False)
         self.sms_enabled = self.config.get("sms_enabled", False)
         if "alert_thresholds" in self.config:
-            self.LEVEL_THRESHOLDS = {**self.DEFAULT_THRESHOLDS, **self.config["alert_thresholds"]}
+            # Normalize threshold keys to uppercase
+            normalized_thresholds = {}
+            for key, value in self.config["alert_thresholds"].items():
+                normalized_thresholds[key.upper()] = value
+            self.LEVEL_THRESHOLDS = {**self.DEFAULT_THRESHOLDS, **normalized_thresholds}
         else:
             self.LEVEL_THRESHOLDS = self.DEFAULT_THRESHOLDS.copy()
     
@@ -202,7 +353,8 @@ class AlertSystem:
         try:
             with open(self.alerts_dir / "alerts_log.jsonl", "a") as f:
                 json.dump(alert, f)
-                f.write("\n")
+                f.write("
+")
             df_path = self.alerts_dir / "alerts_log.csv"
             import pandas as pd
             if not df_path.exists():
@@ -353,3 +505,34 @@ def get_alert_system(config_path: Optional[str] = None) -> AlertSystem:
 def reset_alert_system() -> None:
     global _alert_system
     _alert_system = None
+
+
+def validate_alert_config() -> Tuple[bool, List[str]]:
+    """
+    Standalone function to validate alert configuration without initializing the system.
+    Useful for CI/CD pipelines and startup checks.
+    """
+    alert_system = AlertSystem()
+    return alert_system.validate_config()
+
+
+def encrypt_credential(key: str, value: str, encryption_key: Optional[str] = None) -> str:
+    """
+    Standalone function to encrypt a credential.
+    
+    Args:
+        key: The configuration key name (for logging)
+        value: The sensitive value to encrypt
+        encryption_key: Optional encryption key (defaults to ENCRYPTION_KEY env var)
+    
+    Returns:
+        Encrypted string prefixed with 'ENC:'
+    """
+    if encryption_key is None:
+        encryption_key = os.getenv('ENCRYPTION_KEY')
+    if not encryption_key:
+        raise ValueError("ENCRYPTION_KEY environment variable not set")
+    
+    alert_system = AlertSystem()
+    alert_system.encryption_key = encryption_key
+    return alert_system._encrypt_value(value)
