@@ -247,9 +247,7 @@ if run_button:
             log_text += line
             lines = log_text.splitlines()
             if len(lines) > 25:
-                log_text = "
-".join(lines[-25:]) + "
-"
+                log_text = "\n".join(lines[-25:]) + "\n"
             log_box.code(log_text, language="bash")
             
         process.stdout.close()

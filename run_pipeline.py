@@ -22,8 +22,7 @@ def run_cmd(cmd_list, optional=False):
         return True
     except subprocess.CalledProcessError as e:
         if optional:
-            logger.warning(f"Comando fallito (opzionale): {' '.join(cmd_str)}
-Errore: {e.stderr}")
+            logger.warning(f"Comando fallito (opzionale): {' '.join(cmd_str)}\nErrore: {e.stderr}")
             return False
         else:
             raise
@@ -196,63 +195,4 @@ Esempi di uso:
         # FASE 3: Spazializzazione
         if args.start_phase <= 3 and not args.skip_phase3:
             logger.info("[Fase 3] Integrazione coordinate metriche...")
-            out_deltas_spatial = data_processed_dir / "deltas_spatial.csv"
-            
-            if stations_csv is None:
-                logger.error("Per Fase 3 serve --stations-csv.")
-                sys.exit(1)
-            
-            run_cmd([
-                python_exe, scripts_dir / "attach_coords_to_deltas.py",
-                "--delta-csv", str(out_station_stats),
-                "--stations-csv", str(stations_csv),
-                "--output-csv", str(out_deltas_spatial),
-                "--value-column", "base_mean"
-            ])
-            logger.info("Fase 3 completata.")
-        else:
-            if args.delta_csv:
-                out_deltas_spatial = data_processed_dir / "deltas_spatial.csv"
-                if not out_deltas_spatial.exists():
-                    logger.warning(f"Fase 3 saltata. Assicurati che {out_deltas_spatial} esista.")
-
-        # FASE 4: Output GIS
-        if args.start_phase <= 4 and not args.skip_phase4:
-            logger.info("[Fase 4] Generazione output GIS...")
-            
-            if out_deltas_spatial is None or not out_deltas_spatial.exists():
-                logger.error(f"File delta spaziale mancante: {out_deltas_spatial}")
-                sys.exit(1)
-            
-            if out_station_stats is None or not out_station_stats.exists():
-                out_station_stats = data_processed_dir / "station_stats.csv"
-                if not out_station_stats.exists():
-                    logger.error("File statistiche stazioni mancante.")
-                    sys.exit(1)
-            
-            run_cmd([
-                python_exe, scripts_dir / "analyze_delta_map.py",
-                "--delta-csv", str(out_deltas_spatial),
-                "--stats-csv", str(out_station_stats),
-                "--outdir", str(maps_dir),
-                "--export-geotiff",
-                "--export-shapefile",
-                "--anomaly-threshold", "0.5"
-            ])
-            logger.info("Fase 4 completata.")
-
-        logger.info("=" * 60)
-        logger.info("  Pipeline completata con successo!")
-        logger.info(f"  Risultati in: {run_dir}/")
-        logger.info("=" * 60)
-
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Errore critico: Comando fallito con codice {e.returncode}.")
-        logger.error(f"Comando: {' '.join(e.cmd)}")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Errore inaspettato: {str(e)}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
+            out_deltas_spatial = data_processed_dir / "deltas_spatia

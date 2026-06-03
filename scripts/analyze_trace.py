@@ -7,9 +7,11 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from obspy import read
 from obspy.core.trace import Trace
 from obspy.signal.trigger import classic_sta_lta
+from scipy.signal import welch
 
 from utils import setup_logger
 
@@ -19,7 +21,10 @@ logger = setup_logger("analyze_trace")
 def plot_waveform(trace: Trace, outdir: Path | None = None) -> None:
     fig, ax = plt.subplots(figsize=(10, 4))
     times = trace.times("matplotlib")
-    ax.plot_date(times, trace.data, "k-", linewidth=0.8)
+    # Decimazione visuale per array troppo grandi (evita ArrayMemoryError)
+    skip = max(1, trace.stats.npts // 500_000)
+    ax.plot(times[::skip], trace.data[::skip], "k-", linewidth=0.8)
+    ax.xaxis_date()
     ax.set_title(f"{trace.id} | {trace.stats.starttime} to {trace.stats.endtime}")
     ax.set_xlabel("Tempo")
     ax.set_ylabel("Ampiezza (counts)")
@@ -35,13 +40,12 @@ def plot_waveform(trace: Trace, outdir: Path | None = None) -> None:
 
 
 def plot_fft(trace: Trace, outdir: Path | None = None) -> None:
+    sr = trace.stats.sampling_rate
     npts = trace.stats.npts
-    dt = trace.stats.delta
-    window = np.hanning(npts)
-    data = trace.data.astype(float) * window
-    fft_vals = np.fft.rfft(data)
-    fft_freq = np.fft.rfftfreq(npts, dt)
-    amplitude = np.abs(fft_vals)
+    # Usa Welch per calcolare lo spettro su grossi array (evita MemoryError)
+    nperseg = min(npts, int(sr * 60))  # finestre di 60 secondi
+    fft_freq, pxx = welch(trace.data.astype(float), fs=sr, nperseg=nperseg)
+    amplitude = np.sqrt(pxx)
 
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.semilogy(fft_freq, amplitude, "b-")
@@ -65,9 +69,10 @@ def plot_sta_lta(trace: Trace, sta: float, lta: float, outdir: Path | None = Non
     nlta = max(nsta + 1, int(sr * lta))
     cft = classic_sta_lta(trace.data, nsta, nlta)
     times = trace.times()
+    skip = max(1, trace.stats.npts // 500_000)
 
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(times, cft, "r-")
+    ax.plot(times[::skip], cft[::skip], "r-")
     ax.set_title(f"CFT STA/LTA (STA={sta}s, LTA={lta}s)")
     ax.set_xlabel("Tempo (s)")
     ax.set_ylabel("Ratio")
@@ -94,9 +99,9 @@ def summarize_trace(trace: Trace, sta: float, lta: float) -> dict[str, float]:
     cft_peak_idx = int(np.argmax(cft))
     cft_peak_time = trace.stats.starttime.timestamp + cft_peak_idx / sr
 
-    freqs = np.fft.rfftfreq(trace.stats.npts, trace.stats.delta)
-    spectrum = np.abs(np.fft.rfft(data * np.hanning(trace.stats.npts)))
-    peak_freq_idx = int(np.argmax(spectrum))
+    nperseg = min(trace.stats.npts, int(sr * 60))
+    freqs, pxx = welch(data, fs=sr, nperseg=nperseg)
+    peak_freq_idx = int(np.argmax(pxx))
     peak_freq = freqs[peak_freq_idx] if freqs.size else 0.0
 
     summary = {
@@ -121,41 +126,70 @@ def summarize_trace(trace: Trace, sta: float, lta: float) -> dict[str, float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analizza una traccia MiniSEED (waveform, spettro, STA/LTA).")
-    parser.add_argument("--file", required=True, type=Path, help="Percorso al file MiniSEED.")
+    parser.add_argument("--file", type=Path, help="Percorso al file MiniSEED.")
+    parser.add_argument("--dir", type=Path, help="Cartella contenente file MiniSEED da analizzare in batch.")
+    parser.add_argument("--output-csv", type=Path, help="File CSV di output per le statistiche batch.")
     parser.add_argument("--component", help="Se il file contiene più tracce, specifica la component (es. 'HHZ').")
     parser.add_argument("--sta", type=float, default=1.0, help="Finestra STA in secondi.")
     parser.add_argument("--lta", type=float, default=10.0, help="Finestra LTA in secondi.")
     parser.add_argument("--freqmin", type=float, help="Filtro passa-basso minimo (Hz).")
     parser.add_argument("--freqmax", type=float, help="Filtro passa-basso massimo (Hz).")
     parser.add_argument("--outdir", type=Path, help="Se impostata, salva i grafici nella cartella.")
+    parser.add_argument("--no-plots", action="store_true", help="Disabilita la generazione dei grafici (utile in batch).")
     args = parser.parse_args()
 
-    st = read(str(args.file))
-    if args.component:
-        st = st.select(component=args.component)
-        if len(st) == 0:
-            raise SystemExit(f"Nessuna traccia con component {args.component}")
+    if not args.file and not args.dir:
+        parser.error("Devi specificare --file oppure --dir")
 
-    trace = st[0]
-    trace = trace.copy()
-
-    if args.freqmin or args.freqmax:
-        fmin = args.freqmin or 0.01
-        fmax = args.freqmax or (0.4 * trace.stats.sampling_rate)
-        trace.detrend("demean")
-        trace.detrend("linear")
-        trace.taper(max_percentage=0.05, type="cosine")
-        trace.filter("bandpass", freqmin=fmin, freqmax=fmax, corners=4, zerophase=True)
+    files_to_process = list(args.dir.rglob("*.mseed")) if args.dir else [args.file]
 
     if args.outdir:
         args.outdir.mkdir(parents=True, exist_ok=True)
 
-    plot_waveform(trace, args.outdir)
-    plot_fft(trace, args.outdir)
-    plot_sta_lta(trace, args.sta, args.lta, args.outdir)
+    all_summaries = []
 
-    summary = summarize_trace(trace, args.sta, args.lta)
-    logger.info("\n" + json.dumps(summary, indent=2))
+    for fpath in files_to_process:
+        try:
+            st = read(str(fpath))
+        except Exception as exc:
+            logger.warning(f"Impossibile leggere {fpath}: {exc}")
+            continue
+
+        if args.component:
+            st = st.select(component=args.component)
+            if len(st) == 0:
+                logger.warning(f"Nessuna traccia con component {args.component} in {fpath}")
+                continue
+
+        trace = st[0]
+        trace = trace.copy()
+
+        if args.freqmin or args.freqmax:
+            fmin = args.freqmin or 0.01
+            fmax = args.freqmax or (0.4 * trace.stats.sampling_rate)
+            trace.detrend("demean")
+            trace.taper(max_percentage=0.05, type="cosine")
+            trace.filter("bandpass", freqmin=fmin, freqmax=fmax, corners=4, zerophase=True)
+
+        if not args.no_plots:
+            plot_waveform(trace, args.outdir)
+            plot_fft(trace, args.outdir)
+            plot_sta_lta(trace, args.sta, args.lta, args.outdir)
+
+        summary = summarize_trace(trace, args.sta, args.lta)
+        summary["filename"] = fpath.name
+        all_summaries.append(summary)
+
+        if args.dir:
+            logger.info(f"Elaborato: {fpath.name}")
+        else:
+            logger.info("\n" + json.dumps(summary, indent=2))
+
+    if args.dir and args.output_csv and all_summaries:
+        df = pd.DataFrame(all_summaries)
+        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(args.output_csv, index=False)
+        logger.info(f"Statistiche batch salvate in {args.output_csv} ({len(df)} file).")
 
 
 if __name__ == "__main__":

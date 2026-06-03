@@ -152,7 +152,7 @@ def _download_worker(
         return info
 
     try:
-        client = Client(client_name)
+        client = Client(client_name, timeout=45)
         stream = client.get_waveforms(
             network=network, station=station, location=location,
             channel=channel, starttime=window_start, endtime=window_end,

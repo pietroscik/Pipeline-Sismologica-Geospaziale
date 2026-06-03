@@ -31,6 +31,8 @@ class PickConfig:
     freqmin: Optional[float] = 1.0
     freqmax: Optional[float] = 10.0
     taper_percentage: float = 0.05
+    min_stations: int = 3
+    coincidence_window: float = 10.0
 
 
 def parse_filename(path: Path) -> tuple[str, str, str, str]:
@@ -43,10 +45,19 @@ def parse_filename(path: Path) -> tuple[str, str, str, str]:
 
 
 def preprocess(stream: Stream, cfg: PickConfig) -> Stream:
+    
     st = stream.copy()
     st.merge(fill_value="interpolate")
+    
+    # 1. Riduzione del volume (Downsampling/Decimazione)
+    # Abbassiamo il campionamento a ~50 Hz per risparmiare RAM e CPU
+    for tr in st:
+        if tr.stats.sampling_rate > 50.0:
+            factor = int(tr.stats.sampling_rate // 50.0)
+            if factor > 1:
+                tr.decimate(factor=factor, no_filter=False)
+                
     st.detrend("demean")
-    st.detrend("linear")
     st.taper(max_percentage=cfg.taper_percentage, type="cosine")
     if cfg.freqmin and cfg.freqmax:
         for tr in st:
@@ -59,20 +70,60 @@ def preprocess(stream: Stream, cfg: PickConfig) -> Stream:
     return st
 
 
-def pick_arrival(stream: Stream, cfg: PickConfig) -> Optional[float]:
+def get_all_triggers(stream: Stream, cfg: PickConfig) -> list[float]:
+    """Trova tutti i trigger STA/LTA presenti nella traccia continua."""
     tr = stream[0]
     sampling_rate = tr.stats.sampling_rate
     nsta = max(1, int(cfg.sta_seconds * sampling_rate))
     nlta = max(nsta + 1, int(cfg.lta_seconds * sampling_rate))
     if nlta >= len(tr.data):
-        return None
+        return []
     cft = classic_sta_lta(tr.data, nsta, nlta)
     on_off = trigger_onset(cft, cfg.on_threshold, cfg.off_threshold)
-    if len(on_off) == 0:
-        return None
-    onset_sample = on_off[0][0]
-    return tr.stats.starttime.timestamp + onset_sample / sampling_rate
+    
+    triggers = []
+    for onset in on_off:
+        onset_sample = onset[0]
+        triggers.append(tr.stats.starttime.timestamp + onset_sample / sampling_rate)
+    return triggers
 
+
+def discover_events(df_triggers: pd.DataFrame, window_s: float, min_stations: int) -> pd.DataFrame:
+    """Raggruppa i trigger isolati in eventi sismici basandosi sulla coincidenza temporale."""
+    logger.info(f"Ricerca coincidenze su {len(df_triggers)} trigger grezzi...")
+    df = df_triggers.sort_values("arrival_epoch").copy()
+    events = []
+    current_cluster = []
+
+    for _, row in df.iterrows():
+        if not current_cluster:
+            current_cluster.append(row)
+            continue
+
+        # Se il trigger rientra nella finestra temporale del primo trigger del cluster
+        if row["arrival_epoch"] - current_cluster[0]["arrival_epoch"] <= window_s:
+            # Aggiungiamo solo se è una stazione diversa (evita doppi trigger sulla stessa stazione)
+            if row["station"] not in [r["station"] for r in current_cluster]:
+                current_cluster.append(row)
+        else:
+            # La finestra è chiusa. Valutiamo se il cluster ha abbastanza stazioni.
+            if len(current_cluster) >= min_stations:
+                events.append(current_cluster)
+            current_cluster = [row]
+
+    if len(current_cluster) >= min_stations:
+        events.append(current_cluster)
+
+    logger.info(f"Trovati {len(events)} eventi (cluster) con almeno {min_stations} stazioni coincidenti.")
+    final_rows = []
+    for i, cluster in enumerate(events):
+        ev_id = f"AUTO_EV_{i+1:04d}"
+        for r in cluster:
+            r_dict = r.to_dict()
+            r_dict["event_id"] = ev_id
+            final_rows.append(r_dict)
+
+    return pd.DataFrame(final_rows)
 
 def iter_mseed_files(directory: Path) -> Iterable[Path]:
     yield from sorted(directory.rglob("*.mseed"))
@@ -89,6 +140,8 @@ def main() -> None:
     parser.add_argument("--lta", type=float, default=10.0, help="Finestra LTA (s)")
     parser.add_argument("--thr-on", type=float, default=3.0)
     parser.add_argument("--thr-off", type=float, default=1.5)
+    parser.add_argument("--min-stations", type=int, default=3, help="Stazioni minime per confermare l'evento.")
+    parser.add_argument("--coincidence-window", type=float, default=10.0, help="Finestra in secondi per raggruppare i trigger.")
     args = parser.parse_args()
 
     cfg = PickConfig(
@@ -98,10 +151,18 @@ def main() -> None:
         off_threshold=args.thr_off,
         freqmin=args.freqmin,
         freqmax=args.freqmax,
+        min_stations=args.min_stations,
+        coincidence_window=args.coincidence_window,
     )
 
     rows = []
-    for path in iter_mseed_files(args.mseed_dir):
+    all_files = list(iter_mseed_files(args.mseed_dir))
+    total_files = len(all_files)
+    logger.info(f"Trovati {total_files} file MiniSEED da elaborare.")
+
+    for i, path in enumerate(all_files, 1):
+        if i % 10 == 0 or i == total_files:
+            logger.info(f"Elaborazione file {i}/{total_files}...")
         try:
             event_id, network, station, channel = parse_filename(path)
         except ValueError as exc:
@@ -109,36 +170,64 @@ def main() -> None:
             continue
 
         try:
-            st = read(str(path))
+            # Leggiamo il file e uniamo eventuali gap.
+            # Questo alloca la memoria base, ma le operazioni matematiche
+            # verranno fatte a piccoli blocchi per evitare saturazione RAM.
+            st_raw = read(str(path))
+            st_raw.merge(fill_value="interpolate")
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Impossibile leggere {path.name}: {exc}")
             continue
 
-        st = preprocess(st, cfg)
-        arrival_ts = pick_arrival(st, cfg)
-        if arrival_ts is None:
-            logger.warning(f"Nessun pick per {path.name}")
-            continue
+        tr = st_raw[0]
+        sampling_rate_original = tr.stats.sampling_rate
+        start_epoch = tr.stats.starttime.timestamp
+        end_epoch = tr.stats.endtime.timestamp
 
-        tr = st[0]
-        rows.append(
-            dict(
-                filename=str(path),
-                event_id=event_id,
-                network=network,
-                station=station,
-                channel=channel,
-                start_epoch=tr.stats.starttime.timestamp,
-                end_epoch=tr.stats.endtime.timestamp,
-                sampling_rate=tr.stats.sampling_rate,
-                arrival_epoch=arrival_ts,
+        # Chunking: Finestre da 1 ora (3600s) con 60s di overlap
+        # Isoliamo i calcoli pesanti su array minuscoli
+        window_length = 3600.0
+        overlap = max(60.0, cfg.lta_seconds * 3)
+        step = window_length - overlap
+
+        triggers = []
+        # Scivoliamo lungo il tracciato continuo
+        for tr_window in tr.slide(window_length=window_length, step=step, include_partial_windows=True):
+            st_win = Stream(traces=[tr_window.copy()])
+            st_win = preprocess(st_win, cfg)
+            win_triggers = get_all_triggers(st_win, cfg)
+            
+            is_last = (tr_window.stats.endtime >= tr.stats.endtime)
+            valid_end = tr_window.stats.starttime.timestamp + step
+            
+            # Ignoriamo i trigger nella zona di sovrapposizione per non avere duplicati
+            for ts in win_triggers:
+                if is_last or ts < valid_end:
+                    triggers.append(ts)
+
+        for arrival_ts in triggers:
+            rows.append(
+                dict(
+                    filename=str(path),
+                    network=network,
+                    station=station,
+                    channel=channel,
+                    start_epoch=start_epoch,
+                    end_epoch=end_epoch,
+                    sampling_rate=sampling_rate_original,
+                    arrival_epoch=arrival_ts,
+                )
             )
-        )
 
     if not rows:
         raise SystemExit("Nessun pick trovato. Controlla i parametri o le tracce.")
 
-    df = pd.DataFrame(rows)
+    df_raw = pd.DataFrame(rows)
+    df = discover_events(df_raw, cfg.coincidence_window, cfg.min_stations)
+    
+    if df.empty:
+        raise SystemExit(f"Trovati {len(df_raw)} trigger, ma nessuno forma una coincidenza di rete sufficiente.")
+
     df["arrival_iso"] = pd.to_datetime(df["arrival_epoch"], unit="s")
     df["start_iso"] = pd.to_datetime(df["start_epoch"], unit="s")
     df["end_iso"] = pd.to_datetime(df["end_epoch"], unit="s")
