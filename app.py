@@ -23,16 +23,12 @@ def load_spatial_data(csv_path: str, mtime: float) -> pd.DataFrame:
 st.title("🌋 Interfaccia Pipeline Sismologica Geospaziale")
 st.markdown("Pannello di controllo web per eseguire analisi sismiche e visualizzare i risultati.")
 
-# ==========================================
 # SIDEBAR: CONFIGURAZIONE PARAMETRI
-# ==========================================
 with st.sidebar:
     st.header("⚙️ Configurazione")
     run_name = st.text_input("Nome Esecuzione (Run Name)", value="analisi_web_01")
     
     st.subheader("📁 File di Input")
-    
-    # Opzione per usare file pre-esistenti o caricarne di nuovi
     use_existing_files = st.radio(
         "Sorgente dati:",
         ["File locali", "Carica nuovi file"],
@@ -40,51 +36,17 @@ with st.sidebar:
     )
     
     if use_existing_files == "File locali":
-        events_csv = st.text_input(
-            "Percorso Events CSV",
-            value="",
-            help="Se non hai un catalogo eventi/picks, puoi usare direttamente il delta di esempio."
-        )
-        picks_csv = st.text_input(
-            "Percorso Picks CSV",
-            value="",
-            help="Facoltativo se fornisci già un file delta pre-elaborato."
-        )
-        stations_csv = st.text_input(
-            "Percorso Stations CSV",
-            value=str(EXAMPLE_LEGACY_DIR / "stations.csv"),
-            help="Catalogo stazioni usato dalla pipeline e dall'esempio legacy integrato."
-        )
-        delta_csv = st.text_input(
-            "Percorso Delta CSV (opzionale)",
-            value=str(EXAMPLE_LEGACY_DIR / "scoperte_automatiche.csv.gz"),
-            help="CSV gzip già pronto con i delta. Con il dataset di esempio la pipeline parte subito."
-        )
+        events_csv = st.text_input("Percorso Events CSV", value="", help="Se non hai un catalogo eventi/picks, puoi usare direttamente il delta di esempio.")
+        picks_csv = st.text_input("Percorso Picks CSV", value="", help="Facoltativo se fornisci già un file delta pre-elaborato.")
+        stations_csv = st.text_input("Percorso Stations CSV", value=str(EXAMPLE_LEGACY_DIR / "stations.csv"), help="Catalogo stazioni usato dalla pipeline e dall'esempio legacy integrato.")
+        delta_csv = st.text_input("Percorso Delta CSV (opzionale)", value=str(EXAMPLE_LEGACY_DIR / "scoperte_automatiche.csv.gz"), help="CSV gzip già pronto con i delta. Con il dataset di esempio la pipeline parte subito.")
     else:
-        # File uploaders per caricare nuovi file
         st.markdown("**Carica i file CSV richiesti:**")
-        uploaded_events = st.file_uploader(
-            "Events CSV",
-            type=["csv"],
-            help="File CSV contenente gli eventi sismici"
-        )
-        uploaded_picks = st.file_uploader(
-            "Picks CSV",
-            type=["csv"],
-            help="File CSV contenente i picks (fasi P/S)"
-        )
-        uploaded_stations = st.file_uploader(
-            "Stations CSV",
-            type=["csv"],
-            help="File CSV contenente le coordinate delle stazioni"
-        )
-        uploaded_delta = st.file_uploader(
-            "Delta CSV (opzionale)",
-            type=["csv"],
-            help="File CSV pre-processato con i delta (opzionale)"
-        )
+        uploaded_events = st.file_uploader("Events CSV", type=["csv"], help="File CSV contenente gli eventi sismici")
+        uploaded_picks = st.file_uploader("Picks CSV", type=["csv"], help="File CSV contenente i picks (fasi P/S)")
+        uploaded_stations = st.file_uploader("Stations CSV", type=["csv"], help="File CSV contenente le coordinate delle stazioni")
+        uploaded_delta = st.file_uploader("Delta CSV (opzionale)", type=["csv"], help="File CSV pre-processato con i delta (opzionale)")
         
-        # Salva i file caricati in data/raw/
         if uploaded_events or uploaded_picks or uploaded_stations or uploaded_delta:
             data_raw_dir = PROJECT_ROOT / "data" / "raw"
             data_raw_dir.mkdir(parents=True, exist_ok=True)
@@ -153,6 +115,46 @@ with st.sidebar:
         skip_phase3 = st.checkbox("Salta Fase 3", value=False)
         skip_phase4 = st.checkbox("Salta Fase 4", value=False)
     
+    # NOVITA: Analisi Mobile e Allarmi
+    st.subheader("📱 Analisi Mobile e Allarmi")
+    mobile_analysis_enabled = st.checkbox(
+        "Abilita Analisi Mobile",
+        value=False,
+        help="Esegui analisi mobile e generazione allarmi dopo la pipeline principale"
+    )
+    
+    if mobile_analysis_enabled:
+        mobile_min_stations = st.slider(
+            "Minimo Stazioni per Allarme",
+            min_value=1, 
+            max_value=50, 
+            value=18,
+            help="Soglia minima di stazioni per generare allarmi (default: 18)"
+        )
+        
+        mobile_alert_threshold = st.slider(
+            "Soglia Rischio per Allarme",
+            min_value=0.0, 
+            max_value=1.0, 
+            value=0.7, 
+            step=0.01,
+            format="%.2f",
+            help="Soglia di probabilita per generare allarmi (default: 0.7)"
+        )
+        
+        mobile_model_type = st.selectbox(
+            "Tipo Modello ML",
+            options=["xgboost", "random_forest"],
+            index=0,
+            help="Seleziona il tipo di modello ML per l'analisi mobile (default: xgboost)"
+        )
+        
+        mobile_generate_alerts = st.checkbox(
+            "Genera Allarmi Attivi",
+            value=True,
+            help="Genera allarmi attivi (email, webhook, SMS) durante l'analisi mobile"
+        )
+
     st.markdown("---")
     run_button = st.button("🚀 Avvia Pipeline", type="primary", use_container_width=True)
     
@@ -167,23 +169,16 @@ with st.sidebar:
             max_d = float(df_temp["delta_seconds"].max())
             if min_d >= max_d:
                 min_d, max_d = min_d - 1.0, max_d + 1.0
-            delta_range = st.slider(
-                "Filtra per Delta (secondi)",
-                min_value=min_d, max_value=max_d, value=(min_d, max_d)
-            )
+            delta_range = st.slider("Filtra per Delta (secondi)", min_value=min_d, max_value=max_d, value=(min_d, max_d))
         search_station = st.text_input("🔍 Cerca Stazione (es. CAAM)", help="Filtra per nome della stazione")
 
-# ==========================================
 # LOGICA DI ESECUZIONE
-# ==========================================
 if run_button:
-    # Costruisci la lista di argomenti per run_pipeline.py
     cmd_pipeline = [
         sys.executable, str(PROJECT_ROOT / "run_pipeline.py"),
         "--run-name", run_name
     ]
     
-    # Aggiungi i parametri dei file solo se forniti
     if use_existing_files == "Carica nuovi file" or use_existing_files == "File locali":
         if 'events_csv' in locals() and events_csv:
             cmd_pipeline.extend(["--events-csv", events_csv])
@@ -194,10 +189,8 @@ if run_button:
         if 'delta_csv' in locals() and delta_csv:
             cmd_pipeline.extend(["--delta-csv", delta_csv])
     
-    # Aggiungi il parametro start-phase
     cmd_pipeline.extend(["--start-phase", str(start_phase)])
     
-    # Aggiungi i parametri skip-phase
     if skip_phase0:
         cmd_pipeline.append("--skip-phase0")
     if skip_phase1:
@@ -209,10 +202,18 @@ if run_button:
     if skip_phase4:
         cmd_pipeline.append("--skip-phase4")
     
+    # NOVITA: Aggiungi parametri analisi mobile
+    if mobile_analysis_enabled:
+        cmd_pipeline.append("--mobile-analysis")
+        cmd_pipeline.extend(["--mobile-min-stations", str(mobile_min_stations)])
+        cmd_pipeline.extend(["--mobile-alert-threshold", str(mobile_alert_threshold)])
+        cmd_pipeline.extend(["--mobile-model-type", mobile_model_type])
+        if mobile_generate_alerts:
+            cmd_pipeline.append("--mobile-generate-alerts")
+    
     status_msg = st.empty()
     status_msg.info(f"Avvio della run: **{run_name}** in corso. Attendi il completamento...", icon="⏳")
     
-    # 1. Esecuzione Fase 0 (Seleziona Stazioni)
     if use_spatial_filter and not skip_phase0:
         with st.spinner("Fase 0: Estrazione stazioni nell'area selezionata..."):
             cmd_fase0 = [
@@ -228,7 +229,6 @@ if run_button:
                 st.code(e.stderr)
                 st.stop()
                 
-    # 1.5 Esecuzione Fase 1 (Download Waveforms)
     if run_download and not skip_phase1:
         st.info("Fase 1: Download delle tracce MiniSEED in corso. Leggi i log qui sotto in tempo reale...")
         cmd_fase1 = [
@@ -247,7 +247,9 @@ if run_button:
             log_text += line
             lines = log_text.splitlines()
             if len(lines) > 25:
-                log_text = "\n".join(lines[-25:]) + "\n"
+                log_text = "
+".join(lines[-25:]) + "
+"
             log_box.code(log_text, language="bash")
             
         process.stdout.close()
@@ -256,7 +258,6 @@ if run_button:
             st.stop()
         st.success("✅ Download tracce completato!")
     
-    # 2. Esecuzione Pipeline Principale (run_pipeline.py)
     with st.spinner("Esecuzione delle analisi spaziali..."):
         try:
             res_pipe = subprocess.run(cmd_pipeline, capture_output=True, text=True, check=True)
@@ -269,35 +270,26 @@ if run_button:
             st.code(e.stderr)
             st.stop()
 
-# ==========================================
 # VISUALIZZAZIONE RISULTATI
-# ==========================================
 st.header("🗺️ Mappa Interattiva delle Stazioni")
 spatial_csv = PROJECT_ROOT / "runs" / run_name / "processed" / "deltas_spatial.csv"
 
 if spatial_csv.exists():
     df_spatial = load_spatial_data(str(spatial_csv), spatial_csv.stat().st_mtime)
     if not df_spatial.empty and "latitude" in df_spatial.columns and "longitude" in df_spatial.columns:
-        
-        # Applica il filtro del cursore
         if delta_range is not None:
             df_spatial = df_spatial[
                 (df_spatial["delta_seconds"] >= delta_range[0]) & 
                 (df_spatial["delta_seconds"] <= delta_range[1])
             ]
             
-        # Applica il filtro di ricerca testuale
         if search_station:
             df_spatial = df_spatial[df_spatial["station"].str.contains(search_station.upper(), na=False)]
             
-        # Centriamo la mappa automaticamente
         center_lat = df_spatial["latitude"].mean() if not df_spatial.empty else 40.82
         center_lon = df_spatial["longitude"].mean() if not df_spatial.empty else 14.14
         
-        # Inizializziamo la mappa
         m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles=None)
-        
-        # Aggiunta basemap multiple
         folium.TileLayer('CartoDB positron', name='CartoDB Light (Default)').add_to(m)
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -309,22 +301,15 @@ if spatial_csv.exists():
         Fullscreen(position='topright').add_to(m)
         stazioni_group = folium.FeatureGroup(name="Stazioni Sismiche").add_to(m)
 
-        # Creazione del layer HeatMap per i ritardi (delta > 0)
         df_delays = df_spatial[df_spatial["delta_seconds"] > 0]
         if not df_delays.empty:
             heat_data = df_delays[['latitude', 'longitude', 'delta_seconds']].values.tolist()
             heat_map_group = folium.FeatureGroup(name="HeatMap Ritardi", show=False).add_to(m)
-            HeatMap(
-                heat_data,
-                radius=25, blur=15,
-                name="HeatMap Ritardi"
-            ).add_to(heat_map_group)
+            HeatMap(heat_data, radius=25, blur=15, name="HeatMap Ritardi").add_to(heat_map_group)
 
-        # Aggiungiamo un marker per ogni stazione
         for _, row in df_spatial.iterrows():
             delta = row.get("delta_seconds", 0)
             color = "crimson" if delta > 0.1 else "darkblue" if delta < -0.1 else "gray"
-            
             popup_html = f"<b>Stazione: {row['station']}</b><br>Delta: {delta:.3f} s"
             folium.CircleMarker(
                 location=[row["latitude"], row["longitude"]],
@@ -334,18 +319,11 @@ if spatial_csv.exists():
             ).add_to(stazioni_group)
             
         folium.LayerControl(position='topright').add_to(m)
-        
-        # Renderizziamo la mappa
         st_folium(m, use_container_width=True, height=500, returned_objects=[])
 
-        # Tabella interattiva
         st.markdown("### 📋 Dati Stazioni Filtrati")
         if not df_spatial.empty:
-            st.dataframe(
-                df_spatial.sort_values("delta_seconds", ascending=False),
-                use_container_width=True,
-                hide_index=True
-            )
+            st.dataframe(df_spatial.sort_values("delta_seconds", ascending=False), use_container_width=True, hide_index=True)
             st.caption(f"Stazioni visualizzate: {len(df_spatial)}")
         else:
             st.warning("Nessuna stazione corrisponde ai criteri di filtro impostati.")
@@ -361,9 +339,7 @@ if maps_dir.exists():
             with cols[i % 2]:
                 st.image(str(img_path), caption=img_path.name, use_container_width=True)
 
-# ==========================================
 # ESPORTAZIONE RISULTATI
-# ==========================================
 run_folder = PROJECT_ROOT / "runs" / run_name
 if run_folder.exists() and any(run_folder.iterdir()):
     st.markdown("---")
