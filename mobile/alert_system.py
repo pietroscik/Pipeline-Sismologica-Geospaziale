@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import yaml
 
+# Import PROJECT_ROOT for consistent path resolution
+from path_utils import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +33,7 @@ class AlertSystem:
     - Local file logging
     
     Usage:
-        alert_system = AlertSystem(config_path="mobile/config/alert_config.yaml")
+        alert_system = AlertSystem(config_path=str(PROJECT_ROOT / "mobile" / "config" / "alert_config.yaml"))
         alert_system.check_threshold(risk_index=0.85)
     """
     
@@ -60,7 +63,7 @@ class AlertSystem:
         """
         self.config = self._load_config(config_path) if config is None else config
         self.alerts_log: List[Dict] = []
-        self.alerts_dir = Path("mobile/alerts")
+        self.alerts_dir = PROJECT_ROOT / "mobile" / "alerts"
         self.alerts_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize notification channels
