@@ -4,11 +4,20 @@ import time
 import logging
 from pathlib import Path
 from typing import Tuple, Optional
+import sys
 
 # Importa funzioni di validazione e calcolo
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "mobile"))
-from data_validator import validate_data, haversine_distance, calculate_mean_distance, calculate_bearing, calculate_mean_direction
+from data_validator import (
+    validate_data,
+    validate_csv_file,
+    validate_geographic_coordinates,
+    haversine_distance,
+    calculate_mean_distance,
+    calculate_bearing,
+    calculate_mean_direction,
+    DataValidationError
+)
 
 # Configura logging
 logger = logging.getLogger(__name__)
@@ -17,29 +26,58 @@ logger = logging.getLogger(__name__)
 LAT_CENTRO = 40.8062
 LON_CENTRO = 14.1410
 
+# Default timeout per operazioni lunghe (in minuti)
+DEFAULT_OPERATION_TIMEOUT = 30
+
 
 def load_data(catalogo_path: str = "catalogo_terremoti_unici.csv") -> pd.DataFrame:
     """Carica e valida il catalogo eventi."""
     logger.info("📖 Caricamento del catalogo eventi...")
-    df = pd.read_csv(catalogo_path)
     
-    # Validazione
-    is_valid, message, df_validated = validate_data(df, required_columns=['event_id', 'Tempo_Riferimento_ISO', 'Numero_Stazioni_Attivate'])
-    if not is_valid:
-        logger.error(f"❌ Errore validazione dati: {message}")
-        raise ValueError(message)
+    # Validate file exists and is readable
+    catalogo_path = Path(catalogo_path)
+    if not catalogo_path.exists():
+        raise FileNotFoundError(f"File catalogo non trovato: {catalogo_path}")
+    if catalogo_path.stat().st_size == 0:
+        raise DataValidationError("File catalogo e' vuoto", errors=["Catalog file is empty"])
     
+    # Load and validate CSV
+    try:
+        df = validate_csv_file(
+            catalogo_path,
+            required_columns={'event_id', 'Tempo_Riferimento_ISO', 'Numero_Stazioni_Attivate'}
+        )
+    except DataValidationError as e:
+        logger.error(f"❌ Validazione catalogo fallita: {e.message}")
+        for err in e.errors:
+            logger.error(f"   {err}")
+        raise
+    
+    # Convert datetime and sort
     df['Tempo'] = pd.to_datetime(df['Tempo_Riferimento_ISO'])
     df.set_index('Tempo', inplace=True)
     df.sort_index(inplace=True)
     
-    logger.info(f"✅ Caricati {len(df)} eventi unici")
+    # Check for empty DataFrame
+    if len(df) == 0:
+        raise DataValidationError("Catalogo eventi e' vuoto", errors=["No events found in catalog"])
+    
+    # Check for valid date range
+    if df.index.min() > df.index.max():
+        raise DataValidationError("Date nel catalogo non valide", errors=["Invalid date range"])
+    
+    logger.info(f"✅ Caricati {len(df)} eventi unici (da {df.index.min()} a {df.index.max()})")
     return df
 
 
 def add_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
     """Aggiunge feature temporali avanzate."""
     logger.info("⚙️ Aggiunta feature temporali...")
+    
+    # Check if DataFrame is empty
+    if len(df) == 0:
+        logger.warning("DataFrame vuoto, feature temporali saltate")
+        return df
     
     # 1. Resampling: Raggruppamento per ora
     df_orario = df.resample('1h').agg(
@@ -49,6 +87,10 @@ def add_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
         energia_std=('Numero_Stazioni_Attivate', 'std'),
         energia_min=('Numero_Stazioni_Attivate', 'min')
     ).fillna(0)
+    
+    # Check if resampled DataFrame is empty
+    if len(df_orario) == 0:
+        raise DataValidationError("Resampling temporale ha prodotto DataFrame vuoto")
     
     # 2. Rolling features (finestre temporali)
     for window in [6, 12, 24, 48]:
@@ -88,6 +130,10 @@ def add_future_target(df_orario: pd.DataFrame, target_window: int = 24, threshol
     """Aggiunge la variabile target: evento con >=threshold stazioni nelle prossime N ore."""
     logger.info(f"🎯 Generazione target (finestra {target_window}h, soglia {threshold} stazioni)...")
     
+    # Check if DataFrame is empty
+    if len(df_orario) == 0:
+        raise DataValidationError("DataFrame vuoto, impossibile generare target")
+    
     # Calcola il massimo numero di stazioni nelle prossime N ore
     df_orario['max_energia_futura'] = df_orario['energia_max'].rolling(window=target_window, min_periods=1).max().shift(-target_window)
     
@@ -98,6 +144,10 @@ def add_future_target(df_orario: pd.DataFrame, target_window: int = 24, threshol
     df_orario['future_events_above_threshold'] = df_orario['energia_max'].rolling(window=target_window, min_periods=1).apply(
         lambda x: (x >= threshold).sum()
     ).shift(-target_window).fillna(0)
+    
+    # Check if target generation was successful
+    if df_orario['Target_Allarme'].isna().all():
+        logger.warning("Tutti i target sono NaN, verifica finestra temporale")
     
     logger.info(f"📊 Target generato: {df_orario['Target_Allarme'].sum()} allarmi su {len(df_orario)} ore")
     return df_orario
@@ -115,10 +165,26 @@ def add_spatial_features(
     
     # 1. Carica dati geospaziali
     try:
-        df_geo = pd.read_csv("output_eventi_georeferenziati.csv.gz")
+        geo_path = Path("output_eventi_georeferenziati.csv.gz")
+        if not geo_path.exists():
+            logger.warning(f"File {geo_path} non trovato, feature spaziali saltate")
+            return df_orario
+        
+        df_geo = pd.read_csv(geo_path)
         df_geo['arrival_iso'] = pd.to_datetime(df_geo['arrival_iso'])
+        
+        # Validate geographic data
+        if 'latitude' in df_geo.columns and 'longitude' in df_geo.columns:
+            validate_geographic_coordinates(df_geo, 'latitude', 'longitude')
+        
     except FileNotFoundError:
         logger.warning("File output_eventi_georeferenziati.csv.gz non trovato, feature spaziali saltate")
+        return df_orario
+    except DataValidationError as e:
+        logger.warning(f"Validazione dati geospaziali fallita: {e.message}")
+        return df_orario
+    except Exception as e:
+        logger.warning(f"Errore caricamento dati geospaziali: {e}")
         return df_orario
     
     # 2. Calcola feature spaziali per ogni ora
@@ -164,7 +230,12 @@ def add_seismological_features(df_orario: pd.DataFrame, bvalue_window: int = 24)
     logger.info("🌋 Aggiunta feature sismologiche...")
     
     try:
-        df_catalogo = pd.read_csv("catalogo_terremoti_unici.csv")
+        catalogo_path = Path("catalogo_terremoti_unici.csv")
+        if not catalogo_path.exists():
+            logger.warning(f"File {catalogo_path} non trovato, feature sismologiche saltate")
+            return df_orario
+        
+        df_catalogo = pd.read_csv(catalogo_path)
         df_catalogo['Tempo_Riferimento_ISO'] = pd.to_datetime(df_catalogo['Tempo_Riferimento_ISO'])
         df_catalogo['ora'] = df_catalogo['Tempo_Riferimento_ISO'].dt.floor('1h')
         
@@ -192,6 +263,11 @@ def add_statistical_features(df_orario: pd.DataFrame) -> pd.DataFrame:
     """Aggiunge feature statistiche avanzate."""
     logger.info("📊 Aggiunta feature statistiche...")
     
+    # Check if DataFrame is empty
+    if len(df_orario) == 0:
+        logger.warning("DataFrame vuoto, feature statistiche saltate")
+        return df_orario
+    
     # 1. Percentili
     for percentile in [25, 50, 75, 90, 95]:
         df_orario[f'energia_p{percentile}_24h'] = df_orario['energia_max'].rolling(24).quantile(percentile/100)
@@ -212,15 +288,36 @@ def add_statistical_features(df_orario: pd.DataFrame) -> pd.DataFrame:
     return df_orario
 
 
-def remove_missing_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Rimuove righe con troppi valori mancanti."""
+def remove_missing_rows(df: pd.DataFrame, max_missing_pct: float = 50.0) -> pd.DataFrame:
+    """
+    Rimuove righe con troppi valori mancanti.
+    
+    Args:
+        df: DataFrame da pulire
+        max_missing_pct: Percentuale massima di valori mancanti accettata (default: 50%)
+    
+    Returns:
+        DataFrame pulito
+    """
+    if len(df) == 0:
+        return df
+    
     nan_counts = df.isnull().sum(axis=1)
-    threshold = len(df.columns) * 0.5
-    df_clean = df[nan_counts <= threshold].copy()
+    max_missing = int(len(df.columns) * (max_missing_pct / 100))
+    
+    if max_missing <= 0:
+        max_missing = 1
+    
+    df_clean = df[nan_counts <= max_missing].copy()
     
     removed = len(df) - len(df_clean)
     if removed > 0:
-        logger.info(f"🧹 Rimosse {removed} righe con troppi valori mancanti")
+        removed_pct = (removed / len(df)) * 100
+        logger.info(f"🧹 Rimosse {removed} righe ({removed_pct:.1f}%) con troppi valori mancanti")
+        
+        # Warn if too many rows removed
+        if removed_pct > 80:
+            logger.warning(f"Attenzione: Più dell'80% delle righe rimosse ({removed_pct:.1f}%)")
     
     return df_clean
 
@@ -232,7 +329,6 @@ def main():
     
     try:
         # Setup logging
-        import sys
         sys.path.insert(0, str(Path(__file__).parent.parent / "mobile"))
         from logging_config import setup_logging
         setup_logging()
@@ -249,9 +345,18 @@ def main():
         # 4. Aggiunta feature spaziali
         try:
             stations = pd.read_csv("stations.csv")
-            df_orario = add_spatial_features(df_orario, df, stations)
+            # Validate stations data
+            if len(stations) == 0:
+                logger.warning("File stations.csv vuoto, feature spaziali saltate")
+            elif 'latitude' in stations.columns and 'longitude' in stations.columns:
+                validate_geographic_coordinates(stations, 'latitude', 'longitude')
+                df_orario = add_spatial_features(df_orario, df, stations)
+            else:
+                logger.warning("File stations.csv senza colonne coordinate, feature spaziali saltate")
         except FileNotFoundError:
             logger.warning("File stations.csv non trovato, feature spaziali saltate")
+        except DataValidationError as e:
+            logger.warning(f"Validazione stations.csv fallita: {e.message}")
         except Exception as e:
             logger.warning(f"Errore feature spaziali: {e}")
         
@@ -263,6 +368,18 @@ def main():
         
         # 7. Rimuovi righe con NaN
         df_ml = remove_missing_rows(df_orario)
+        
+        # Check if final DataFrame is valid
+        if len(df_ml) == 0:
+            raise DataValidationError(
+                "Dataset finale vuoto dopo feature engineering",
+                errors=["Final dataset is empty after feature engineering"]
+            )
+        
+        # Check for too many missing values in final dataset
+        missing_pct = (df_ml.isnull().sum().sum() / (len(df_ml) * len(df_ml.columns))) * 100
+        if missing_pct > 50:
+            logger.warning(f"Dataset finale ha {missing_pct:.1f}% valori mancanti")
         
         # 8. Salvataggio
         FILE_OUT = "dataset_ml_sismico.csv"
@@ -276,6 +393,7 @@ def main():
         print(f"Ore con Allarme (Target=1): {df_ml['Target_Allarme'].sum()}")
         print(f"Percentuale allarmi: {df_ml['Target_Allarme'].sum() / len(df_ml) * 100:.2f}%")
         print(f"Feature totali: {len(df_ml.columns) - 1}")
+        print(f"Valori mancanti: {missing_pct:.1f}%")
         print("-" * 60)
         print(f"
 ✅ Dataset addestramento avanzato salvato: '{FILE_OUT}'")
@@ -286,6 +404,11 @@ def main():
 📋 Anteprima dataset:")
         print(df_ml.head().T)
         
+    except DataValidationError as e:
+        logger.error(f"❌ Validazione dati fallita: {e.message}")
+        for err in e.errors:
+            logger.error(f"   {err}")
+        raise
     except Exception as e:
         logger.error(f"❌ Errore critico in prepara_ml.py: {str(e)}", exc_info=True)
         raise
