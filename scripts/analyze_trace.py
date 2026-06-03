@@ -13,9 +13,18 @@ from obspy.core.trace import Trace
 from obspy.signal.trigger import classic_sta_lta
 from scipy.signal import welch
 
-from utils import setup_logger
+from utils import setup_logger, get_project_root
 
 logger = setup_logger("analyze_trace")
+
+
+def resolve_path(path: Optional[Path]) -> Optional[Path]:
+    """Resolve a path against project root if it's relative."""
+    if path is None:
+        return None
+    if not path.is_absolute():
+        return get_project_root() / path
+    return path
 
 
 def plot_waveform(trace: Trace, outdir: Path | None = None) -> None:
@@ -141,10 +150,21 @@ def main() -> None:
     if not args.file and not args.dir:
         parser.error("Devi specificare --file oppure --dir")
 
-    files_to_process = list(args.dir.rglob("*.mseed")) if args.dir else [args.file]
+    # Resolve paths
+    if args.file:
+        args.file = resolve_path(args.file)
+    if args.dir:
+        args.dir = resolve_path(args.dir)
+    
+    outdir = resolve_path(args.outdir)
+    if outdir:
+        outdir.mkdir(parents=True, exist_ok=True)
+    
+    output_csv = resolve_path(args.output_csv) if args.output_csv else None
+    if output_csv:
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.outdir:
-        args.outdir.mkdir(parents=True, exist_ok=True)
+    files_to_process = list(args.dir.rglob("*.mseed")) if args.dir else [args.file]
 
     all_summaries = []
 
@@ -172,9 +192,9 @@ def main() -> None:
             trace.filter("bandpass", freqmin=fmin, freqmax=fmax, corners=4, zerophase=True)
 
         if not args.no_plots:
-            plot_waveform(trace, args.outdir)
-            plot_fft(trace, args.outdir)
-            plot_sta_lta(trace, args.sta, args.lta, args.outdir)
+            plot_waveform(trace, outdir)
+            plot_fft(trace, outdir)
+            plot_sta_lta(trace, args.sta, args.lta, outdir)
 
         summary = summarize_trace(trace, args.sta, args.lta)
         summary["filename"] = fpath.name
@@ -183,13 +203,13 @@ def main() -> None:
         if args.dir:
             logger.info(f"Elaborato: {fpath.name}")
         else:
-            logger.info("\n" + json.dumps(summary, indent=2))
+            logger.info("
+" + json.dumps(summary, indent=2))
 
-    if args.dir and args.output_csv and all_summaries:
+    if args.dir and output_csv and all_summaries:
         df = pd.DataFrame(all_summaries)
-        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(args.output_csv, index=False)
-        logger.info(f"Statistiche batch salvate in {args.output_csv} ({len(df)} file).")
+        df.to_csv(output_csv, index=False)
+        logger.info(f"Statistiche batch salvate in {output_csv} ({len(df)} file).")
 
 
 if __name__ == "__main__":
