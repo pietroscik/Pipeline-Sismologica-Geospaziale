@@ -1,0 +1,43 @@
+email_enabled: true
+email_smtp: "smtp.gmail.com"
+email_port: 587
+email_user: ""
+email_password: ""
+email_from: "alerts@pipeline-sismologica.com"
+email_to: []
+
+webhook_enabled: true
+webhook_url: ""
+
+sms_enabled: true
+sms_provider: "twilio"
+sms_account_sid: ""
+sms_auth_token: ""
+sms_from: ""
+sms_to: []
+
+alert_thresholds:
+  low: 0.5
+  medium: 0.7
+  high: 0.9
+  critical: 0.95
+
+model_config:
+  type: "xgboost"
+  class_weight: "balanced"
+  early_stopping_rounds: 10
+  eval_metric: "aucpr"
+  cv_folds: 5
+
+campi_flegrei:
+  min_stations_alert: 15
+  coincidence_window: 5.0
+  center_lat: 40.8062
+  center_lon: 14.1410
+  max_distance_km: 50.0
+
+# Production-specific settings
+log_level: INFO
+max_retries: 3
+timeout_seconds: 60
+rate_limit: 100
