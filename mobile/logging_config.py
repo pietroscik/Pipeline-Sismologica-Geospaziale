@@ -2,6 +2,9 @@ import logging
 import logging.config
 from pathlib import Path
 
+# Import PROJECT_ROOT for consistent path resolution
+from path_utils import PROJECT_ROOT
+
 LOGGING_CONFIG = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -23,7 +26,7 @@ LOGGING_CONFIG = {
         },
         'file': {
             'class': 'logging.handlers.RotatingFileHandler',
-            'filename': 'mobile/logs/analysis.log',
+            'filename': str(PROJECT_ROOT / "mobile" / "logs" / "analysis.log"),
             'maxBytes': 10485760,
             'backupCount': 5,
             'formatter': 'json'
@@ -36,6 +39,6 @@ LOGGING_CONFIG = {
 }
 
 def setup_logging():
-    Path("mobile/logs").mkdir(parents=True, exist_ok=True)
+    (PROJECT_ROOT / "mobile" / "logs").mkdir(parents=True, exist_ok=True)
     logging.config.dictConfig(LOGGING_CONFIG)
     return logging.getLogger(__name__)
