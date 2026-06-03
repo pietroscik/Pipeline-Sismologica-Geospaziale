@@ -1,0 +1,43 @@
+email_enabled: false
+email_smtp: "smtp.test.com"
+email_port: 1025
+email_user: "test@example.com"
+email_password: "test_password"
+email_from: "test@example.com"
+email_to: ["test@example.com"]
+
+webhook_enabled: false
+webhook_url: ""
+
+sms_enabled: false
+sms_provider: "twilio"
+sms_account_sid: "test_sid"
+sms_auth_token: "test_token"
+sms_from: "+1234567890"
+sms_to: ["+1234567890"]
+
+alert_thresholds:
+  low: 0.1
+  medium: 0.3
+  high: 0.5
+  critical: 0.7
+
+model_config:
+  type: "xgboost"
+  class_weight: "balanced"
+  early_stopping_rounds: 2
+  eval_metric: "aucpr"
+  cv_folds: 2
+
+campi_flegrei:
+  min_stations_alert: 3
+  coincidence_window: 1.0
+  center_lat: 40.8062
+  center_lon: 14.1410
+  max_distance_km: 200.0
+
+# Test-specific settings
+log_level: DEBUG
+max_retries: 1
+timeout_seconds: 5
+mock_mode: true
