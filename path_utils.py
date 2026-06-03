@@ -1,0 +1,29 @@
+"""Project-wide path utilities for consistent path resolution across all modules.
+
+This module provides a centralized way to access the project root directory,
+ensuring all scripts can reliably locate files regardless of their working directory.
+
+Usage:
+    from path_utils import PROJECT_ROOT, get_project_root
+    
+    # Use PROJECT_ROOT directly
+    config_path = PROJECT_ROOT / "config.yaml"
+    
+    # Or use the function
+    root = get_project_root()
+    data_dir = root / "data"
+"""
+from pathlib import Path
+
+# Absolute path to the project root directory
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def get_project_root() -> Path:
+    """Returns the absolute path to the project root directory."""
+    return PROJECT_ROOT
+
+
+def resolve_project_path(*path_parts: str) -> Path:
+    """Resolves a path relative to the project root."""
+    return PROJECT_ROOT.joinpath(*path_parts)
