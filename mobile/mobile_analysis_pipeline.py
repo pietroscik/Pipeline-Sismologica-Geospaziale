@@ -28,15 +28,14 @@ import yaml
 import shutil
 
 # Import PROJECT_ROOT for consistent path resolution
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from path_utils import PROJECT_ROOT
 
 # Import data validation functions
 sys.path.insert(0, str(PROJECT_ROOT / "mobile"))
 from data_validator import (
     validate_csv_file,
-    validate_csv_columns,
-    validate_geographic_coordinates,
-    validate_file_exists,
+    validate_stations,
     DataValidationError
 )
 
@@ -267,24 +266,21 @@ def validate_input_files(input_csv: Path, stations_csv: Path) -> bool:
         # Input CSV should have basic columns
         input_df = validate_csv_file(
             input_csv,
-            required_columns={"station"},
-            path_description="Input CSV"
+            required_columns={"station"}
         )
         logger.info(f"Input CSV validato: {input_csv.name} ({len(input_df)} righe)")
         
         # Stations CSV should have coordinate columns
         stations_df = validate_csv_file(
             stations_csv,
-            required_columns={"station", "latitude", "longitude"},
-            path_description="Stations CSV"
+            required_columns={"station", "latitude", "longitude"}
         )
         
         # Validate geographic coordinates
-        validate_geographic_coordinates(
-            stations_df,
-            lat_col="latitude",
-            lon_col="longitude"
-        )
+        is_valid, msg = validate_stations(stations_df)
+        if not is_valid:
+            raise DataValidationError(f"Coordinate geografiche non valide: {msg}")
+            
         logger.info(f"Stations CSV validato: {stations_csv.name} ({len(stations_df)} stazioni)")
         
         return True
@@ -344,6 +340,10 @@ def run_mobile_pipeline():
     """Esecuzione principale della pipeline mobile."""
     args = parse_arguments()
     
+    if args.dry_run:
+        logger.info("Dry run completata.")
+        return True
+    
     logger.info("=" * 70)
     logger.info("PIPELINE ANALISI MOBILE + ALLARMI SISMICI")
     logger.info("=" * 70)
@@ -384,8 +384,7 @@ def run_mobile_pipeline():
         python_exe = sys.executable
         
         # 6.1. process_pipeline.py - Georeferenziazione
-        logger.info("
-FASE 1: Georeferenziazione e pulizia dati...")
+        logger.info("\nFASE 1: Georeferenziazione e pulizia dati...")
         cmd1 = [
             python_exe,
             str(script_dir / "process_pipeline.py"),
@@ -400,8 +399,7 @@ FASE 1: Georeferenziazione e pulizia dati...")
             sys.exit(1)
         
         # 6.2. associa_eventi.py - Clustering eventi
-        logger.info("
-FASE 2: Clustering eventi e creazione catalogo...")
+        logger.info("\nFASE 2: Clustering eventi e creazione catalogo...")
         cmd2 = [
             python_exe,
             str(script_dir / "associa_eventi.py")
@@ -413,8 +411,7 @@ FASE 2: Clustering eventi e creazione catalogo...")
             sys.exit(1)
         
         # 6.3. prepara_ml.py - Feature engineering
-        logger.info("
-FASE 3: Feature engineering per ML...")
+        logger.info("\nFASE 3: Feature engineering per ML...")
         cmd3 = [
             python_exe,
             str(script_dir / "prepara_ml.py")
@@ -426,8 +423,7 @@ FASE 3: Feature engineering per ML...")
             sys.exit(1)
         
         # 6.4. train_modello.py - Training e allarmi
-        logger.info("
-FASE 4: Training modello e generazione allarmi...")
+        logger.info("\nFASE 4: Training modello e generazione allarmi...")
         cmd4 = [
             python_exe,
             str(script_dir / "train_modello.py")
@@ -446,8 +442,7 @@ FASE 4: Training modello e generazione allarmi...")
             sys.exit(1)
         
         # 7. Copia output in directory finale
-        logger.info("
-Copia output in directory finale...")
+        logger.info("\nCopia output in directory finale...")
         output_files = [
             "catalogo_terremoti_unici.csv",
             "dataset_ml_sismico.csv",
@@ -463,8 +458,7 @@ Copia output in directory finale...")
                 logger.info(f"   Copiato: {file}")
         
         # 8. Copia modelli e allarmi
-        logger.info("
-Copia modelli e log allarmi...")
+        logger.info("\nCopia modelli e log allarmi...")
         model_dir = PROJECT_ROOT / "mobile" / "models"
         alerts_dir = PROJECT_ROOT / "mobile" / "alerts"
         
@@ -480,8 +474,7 @@ Copia modelli e log allarmi...")
         
         # Tempo totale
         elapsed_time = time.time() - start_time
-        logger.info("
-" + "=" * 70)
+        logger.info("\n" + "=" * 70)
         logger.info("PIPELINE COMPLETATA CON SUCCESSO!")
         logger.info("=" * 70)
         logger.info(f"Output salvato in: {args.output_dir}")

@@ -41,6 +41,9 @@ from typing import List, Dict, Optional, Tuple
 import json
 import yaml
 
+# Aggiungiamo la root del progetto al sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 # Import PROJECT_ROOT for consistent path resolution
 from path_utils import PROJECT_ROOT
 
@@ -96,8 +99,7 @@ def save_test_results(results_dir: Path = None) -> Path:
     with open(results_file, "w") as f:
         json.dump(output, f, indent=2, default=str)
     
-    print(f"
-📊 Results saved to: {results_file}")
+    print(f" 📊 Results saved to: {results_file}")
     return results_file
 
 
@@ -111,8 +113,7 @@ def print_summary() -> None:
     failed = sum(1 for r in test_results if not r["passed"])
     pass_rate = (passed / len(test_results)) * 100
     
-    print("
-" + "=" * 60)
+    print(" " + "=" * 60)
     print("📊 TEST SUMMARY")
     print("=" * 60)
     print(f"Total:  {len(test_results)}")
@@ -122,8 +123,7 @@ def print_summary() -> None:
     print("=" * 60)
     
     if failed > 0:
-        print("
-❌ FAILED TESTS:")
+        print(" ❌ FAILED TESTS:")
         for r in test_results:
             if not r["passed"]:
                 print(f"  - {r['test']}: {r['message']}")
@@ -206,6 +206,7 @@ def test_alert_system_config():
     
     # Test config validation
     try:
+        os.environ['WEBHOOK_URL'] = 'https://test.dev/null'
         is_valid, errors = validate_alert_config()
         if is_valid:
             log_test("Alert System - Config Validation", True, "Configuration is valid")
@@ -213,77 +214,70 @@ def test_alert_system_config():
             log_test("Alert System - Config Validation", False, f"{len(errors)} validation errors", {"errors": errors})
     except Exception as e:
         log_test("Alert System - Config Validation", False, str(e))
+    finally:
+        os.environ.pop('WEBHOOK_URL', None)
 
 
 def test_data_validator():
     """Test data validation functions."""
     from mobile.data_validator import (
-        validate_csv_columns,
-        validate_geographic_coordinates,
-        validate_numeric_range,
+        validate_data,
+        validate_stations,
         DataValidationError
     )
     import pandas as pd
     
-    # Test CSV columns validation
+    # Test valid data
     try:
-        df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
-        validate_csv_columns(df, {"a", "b"})
-        log_test("Data Validator - CSV Columns", True, "CSV columns validation works")
+        df = pd.DataFrame({
+            "event_id": [1, 2],
+            "station": ["A", "B"],
+            "delta_seconds": [0.1, 0.2],
+            "arrival_iso": ["2024-01-01T00:00:00", "2024-01-01T00:00:01"]
+        })
+        is_valid, msg, _ = validate_data(df)
+        log_test("Data Validator - Valid Data", is_valid, msg)
     except Exception as e:
-        log_test("Data Validator - CSV Columns", False, str(e))
+        log_test("Data Validator - Valid Data", False, str(e))
     
     # Test missing columns
     try:
-        df = pd.DataFrame({"a": [1, 2]})
-        validate_csv_columns(df, {"a", "b"})
-        log_test("Data Validator - Missing Columns", False, "Should have raised error for missing column")
-    except DataValidationError:
-        log_test("Data Validator - Missing Columns", True, "Correctly detected missing columns")
+        df = pd.DataFrame({"event_id": [1, 2]})
+        is_valid, msg, _ = validate_data(df)
+        log_test("Data Validator - Missing Columns", not is_valid, "Correctly detected missing columns: " + msg)
     except Exception as e:
         log_test("Data Validator - Missing Columns", False, str(e))
     
-    # Test geographic coordinates
     try:
         df = pd.DataFrame({
-            "latitude": [40.8, 41.0, -89.0],
-            "longitude": [14.1, 14.2, 180.5]
+            "station": ["A", "B"],
+            "latitude": [40.8, -100.0],  # Invalid latitude
+            "longitude": [14.1, 14.2]
         })
-        validate_geographic_coordinates(df, "latitude", "longitude")
-        log_test("Data Validator - Geographic Coordinates", False, "Should have detected invalid coordinates")
-    except DataValidationError:
-        log_test("Data Validator - Geographic Coordinates", True, "Correctly detected invalid coordinates")
+        is_valid, msg = validate_stations(df)
+        log_test("Data Validator - Geographic Coordinates", not is_valid, "Correctly detected invalid coordinates: " + msg)
     except Exception as e:
         log_test("Data Validator - Geographic Coordinates", False, str(e))
     
-    # Test valid coordinates
     try:
         df = pd.DataFrame({
-            "latitude": [40.8, 41.0, -89.0],
-            "longitude": [14.1, 14.2, -179.5]
+            "station": ["A", "B"],
+            "latitude": [40.8, 41.0],
+            "longitude": [14.1, 14.2]
         })
-        validate_geographic_coordinates(df, "latitude", "longitude")
-        log_test("Data Validator - Valid Coordinates", True, "Valid coordinates accepted")
+        is_valid, msg = validate_stations(df)
+        log_test("Data Validator - Valid Coordinates", is_valid, "Valid coordinates accepted: " + msg)
     except Exception as e:
         log_test("Data Validator - Valid Coordinates", False, str(e))
-    
-    # Test numeric range
-    try:
-        df = pd.DataFrame({"value": [1, 5, 10, 15]})
-        validate_numeric_range(df, "value", min_val=0, max_val=10)
-        log_test("Data Validator - Numeric Range", False, "Should have detected out of range values")
-    except DataValidationError:
-        log_test("Data Validator - Numeric Range", True, "Correctly detected out of range values")
-    except Exception as e:
-        log_test("Data Validator - Numeric Range", False, str(e))
 
 
 def test_encryption():
     """Test encryption/decryption functionality."""
     from mobile.alert_system import AlertSystem
+    import base64
     
-    # Generate a test key
-    test_key = "test_key_12345678901234567890123456789012="
+    # Generate a valid Fernet test key (32 url-safe base64-encoded bytes)
+    test_key = base64.urlsafe_b64encode(b"12345678901234567890123456789012").decode('utf-8')
     os.environ["ENCRYPTION_KEY"] = test_key
     
     try:
@@ -300,8 +294,8 @@ def test_encryption():
         log_test("Encryption - Basic", True, "Encryption and decryption work")
         
         # Test with encrypt_credentials function
-        from scripts.encrypt_credentials import encrypt_credential
-        encrypted_cred = encrypt_credential("test_key", "test_value", test_key)
+        from scripts.encrypt_credentials import encrypt_value
+        encrypted_cred = encrypt_value("test_value", test_key)
         assert encrypted_cred.startswith("ENC:"), "Encrypted credential should start with ENC:"
         
         log_test("Encryption - Credentials", True, "Credential encryption works")

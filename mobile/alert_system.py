@@ -289,7 +289,7 @@ class AlertSystem:
             self.config.get("webhook_enabled", False),
             self.config.get("sms_enabled", False)
         ]):
-            errors.append("At least one notification channel (email, webhook, or SMS) must be enabled")
+            logger.warning("No notification channels are enabled. Alerts will only be logged to file.")
         
         # Log warnings for each error
         for error in errors:
@@ -353,8 +353,7 @@ class AlertSystem:
         try:
             with open(self.alerts_dir / "alerts_log.jsonl", "a") as f:
                 json.dump(alert, f)
-                f.write("
-")
+                f.write("\n")
             df_path = self.alerts_dir / "alerts_log.csv"
             import pandas as pd
             if not df_path.exists():

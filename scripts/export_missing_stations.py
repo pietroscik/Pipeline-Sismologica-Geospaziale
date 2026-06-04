@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
+
+# Aggiungiamo la root del progetto al sys.path per garantire importazioni assolute e globali
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 from obspy.clients.fdsn import Client
 
-from utils import setup_logger
+from scripts.utils import setup_logger
 
 logger = setup_logger("export_missing")
 
@@ -73,7 +77,12 @@ def main() -> None:
         return
 
     logger.info(f"Recupero coordinate per {len(missing)} stazioni: {', '.join(missing)}")
-    client = Client("INGV")
+    
+    try:
+        client = Client("INGV", timeout=30)
+    except Exception as exc:
+        raise SystemExit(f"Impossibile inizializzare il client FDSN. Rete non disponibile? Errore: {exc}")
+        
     rows = []
     failures = []
     for code in missing:

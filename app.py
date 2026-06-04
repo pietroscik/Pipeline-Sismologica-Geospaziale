@@ -165,11 +165,13 @@ with st.sidebar:
         st.header("🗺️ Filtri Mappa")
         df_temp = load_spatial_data(str(spatial_csv), spatial_csv.stat().st_mtime)
         if not df_temp.empty and "delta_seconds" in df_temp.columns:
-            min_d = float(df_temp["delta_seconds"].min())
-            max_d = float(df_temp["delta_seconds"].max())
-            if min_d >= max_d:
-                min_d, max_d = min_d - 1.0, max_d + 1.0
-            delta_range = st.slider("Filtra per Delta (secondi)", min_value=min_d, max_value=max_d, value=(min_d, max_d))
+            valid_deltas = df_temp["delta_seconds"].dropna()
+            if not valid_deltas.empty:
+                min_d = float(valid_deltas.min())
+                max_d = float(valid_deltas.max())
+                if min_d >= max_d:
+                    min_d, max_d = min_d - 1.0, max_d + 1.0
+                delta_range = st.slider("Filtra per Delta (secondi)", min_value=min_d, max_value=max_d, value=(min_d, max_d))
         search_station = st.text_input("🔍 Cerca Stazione (es. CAAM)", help="Filtra per nome della stazione")
 
 # LOGICA DI ESECUZIONE
@@ -247,9 +249,7 @@ if run_button:
             log_text += line
             lines = log_text.splitlines()
             if len(lines) > 25:
-                log_text = "
-".join(lines[-25:]) + "
-"
+                log_text = "\n".join(lines[-25:]) + "\n"
             log_box.code(log_text, language="bash")
             
         process.stdout.close()

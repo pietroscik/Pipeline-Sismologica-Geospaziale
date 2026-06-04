@@ -10,7 +10,8 @@ from datetime import datetime
 
 # Importa sistema di allarme e configurazione
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "mobile"))
+# Risaliamo di 3 livelli: train_modello.py -> mobile_devices -> examples -> root -> mobile
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "mobile"))
 from alert_system import AlertSystem, get_alert_system
 from logging_config import setup_logging
 from data_validator import (
@@ -585,257 +586,22 @@ def save_model(
         raise
     
     # Salva modello
-    model_path = model_dir / f"{model_name}.pkl"
-    try:
-        joblib.dump(model, model_path)
-    except Exception as e:
-        logger.error(f"Errore salvataggio modello: {e}")
-        raise
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_path = model_dir / f"{model_name}_{timestamp}.pkl"
     
-    # Salva metadati
+    # Salvataggio tramite joblib
+    joblib.dump(model, model_path)
+    logger.info(f"✅ Modello salvato in: {model_path}")
+    
+    # Salvataggio metadati (se presenti)
     if metadata:
-        metadata_path = model_dir / f"{model_name}_metadata.json"
-        try:
-            with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent=2, default=str)
-            logger.info(f"💾 Metadati salvati in {metadata_path}")
-        except Exception as e:
-            logger.warning(f"Errore salvataggio metadati: {e}")
-    
-    logger.info(f"💾 Modello salvato in {model_path}")
+        meta_path = model_dir / f"{model_name}_{timestamp}_meta.json"
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            # default=str gestisce conversioni fallback di numpy float/int che JSON fatica a serializzare
+            json.dump(metadata, f, indent=4, default=str)
+        logger.info(f"✅ Metadati salvati in: {meta_path}")
+        
     return model_path
 
-
-def load_model(model_path: Path) -> Tuple[Any, Optional[Dict]]:
-    """
-    Carica il modello e i metadati da disco.
-    
-    Args:
-        model_path: Percorso al file del modello
-    
-    Returns:
-        model: Modello caricato
-        metadata: Metadati (se disponibili)
-    
-    Raises:
-        FileNotFoundError: Se il modello non esiste
-        Exception: Se c'e' un errore nel caricamento
-    """
-    if not model_path.exists():
-        raise FileNotFoundError(f"Modello non trovato: {model_path}")
-    
-    try:
-        model = joblib.load(model_path)
-    except Exception as e:
-        logger.error(f"Errore caricamento modello: {e}")
-        raise
-    
-    # Prova a caricare metadati
-    metadata_path = model_path.parent / f"{model_path.stem}_metadata.json"
-    metadata = None
-    if metadata_path.exists():
-        try:
-            with open(metadata_path) as f:
-                metadata = json.load(f)
-        except Exception as e:
-            logger.warning(f"Errore caricamento metadati: {e}")
-    
-    logger.info(f"📂 Modello caricato da {model_path}")
-    return model, metadata
-
-
-def calculate_risk_index(
-    model: Any,
-    X: pd.DataFrame,
-    scaler: Optional[Any] = None
-) -> np.ndarray:
-    """
-    Calcola l'indice di rischio per nuovi dati.
-    
-    Args:
-        model: Modello addestrato
-        X: Nuovi dati (feature matrix)
-        scaler: Scaler per normalizzazione (opzionale)
-    
-    Returns:
-        risk_index: Array con indici di rischio (0-1)
-    
-    Raises:
-        Exception: Se c'e' un errore nella predizione
-    """
-    # Check for empty data
-    if len(X) == 0:
-        logger.warning("X e' vuoto, restituisco array vuoto")
-        return np.array([])
-    
-    # Applica scaler se fornito
-    if scaler is not None:
-        try:
-            X_scaled = scaler.transform(X)
-        except Exception as e:
-            logger.error(f"Errore applicazione scaler: {e}")
-            raise
-    else:
-        X_scaled = X
-    
-    # Predici probabilità
-    try:
-        if hasattr(model, "predict_proba"):
-            risk_index = model.predict_proba(X_scaled)[:, 1]
-        else:
-            # Per XGBoost
-            import xgboost as xgb
-            dmatrix = xgb.DMatrix(X_scaled)
-            risk_index = model.predict(dmatrix)
-    except Exception as e:
-        logger.error(f"Errore predizione: {e}")
-        raise
-    
-    return risk_index
-
-
-def main():
-    """Esecuzione principale del training del modello."""
-    print("🧠 Addestramento Modello di Rischio Sismico...")
-    tempo_inizio = time.time()
-    
-    try:
-        # Setup logging
-        setup_logging()
-        
-        # Carica configurazione
-        config_path = Path(__file__).parent.parent / "mobile" / "config" / "alert_config.yaml"
-        alert_system = get_alert_system(str(config_path))
-        
-        # Carica dati
-        df = load_data()
-        
-        # Suddivisione temporale
-        train, test = split_data_temporal(df, test_size=0.2)
-        
-        # Prepara feature e target
-        X_train, y_train = prepare_features(train)
-        X_test, y_test = prepare_features(test)
-        
-        # Seleziona tipo di modello dalla configurazione
-        model_type = "xgboost"  # Default
-        try:
-            import yaml
-            with open(config_path) as f:
-                config = yaml.safe_load(f)
-            model_type = config.get("model_config", {}).get("type", "xgboost")
-        except Exception as e:
-            logger.warning(f"Errore caricamento configurazione: {e}")
-        
-        # Addestramento modello
-        if model_type == "xgboost":
-            model, train_results = train_xgboost(
-                X_train, y_train, X_test, y_test,
-                early_stopping_rounds=10,
-                eval_metric="aucpr"
-            )
-        elif model_type == "random_forest":
-            model, train_results = train_random_forest(
-                X_train, y_train, X_test, y_test,
-                n_estimators=200,
-                max_depth=10
-            )
-        else:
-            logger.warning(f"Tipo modello non supportato: {model_type}, uso xgboost")
-            model, train_results = train_xgboost(X_train, y_train, X_test, y_test)
-        
-        # Trova soglia ottimale
-        best_threshold, threshold_results = find_optimal_threshold(model, X_test, y_test)
-        
-        # Calcola indice di rischio su test
-        risk_indices = calculate_risk_index(model, X_test)
-        
-        # Genera allarmi per il set di test
-        alert_triggered = False
-        for i, (idx, risk_index) in enumerate(risk_indices.items()):
-            if alert_system.check_threshold(
-                risk_index=risk_index,
-                threshold=best_threshold,
-                min_stations=18,
-                additional_info={
-                    "model_type": model_type,
-                    "timestamp": str(idx),
-                    "data_point": i
-                }
-            ):
-                alert_triggered = True
-        
-        # Calcola metriche finali
-        test_metrics = calculate_metrics(y_test, risk_indices, prefix="test_")
-        
-        # Salva modello
-        model_path = save_model(
-            model,
-            model_dir=Path("mobile/models"),
-            model_name=f"modello_rischio_{model_type}",
-            metadata={
-                "model_type": model_type,
-                "training_timestamp": datetime.now().isoformat(),
-                "best_threshold": best_threshold,
-                "train_samples": len(X_train),
-                "test_samples": len(X_test),
-                "features": list(X_train.columns),
-                "metrics": test_metrics,
-                "threshold_results": threshold_results
-            }
-        )
-        
-        # Stampa risultati
-        tempo_elaborazione = time.time() - tempo_inizio
-        print(f"
-🎯 === RISULTATI FINALI MODELLO {model_type.upper()} ===")
-        print("-" * 60)
-        print(f"📚 Addestramento: {len(X_train)} sample")
-        print(f"🔮 Test: {len(X_test)} sample")
-        print(f"✅ Soglia ottimale: {best_threshold:.3f}")
-        print("-" * 60)
-        print(f"🎯 METRICHE SU TEST:")
-        print(f"   Accuracy:  {test_metrics.get('test_accuracy', 0):.4f}")
-        print(f"   Precision: {test_metrics.get('test_precision', 0):.4f}")
-        print(f"   Recall:    {test_metrics.get('test_recall', 0):.4f}")
-        print(f"   F1-score:  {test_metrics.get('test_f1_score', 0):.4f}")
-        print(f"   ROC AUC:   {test_metrics.get('test_roc_auc', 0):.4f}")
-        print(f"   Avg Precision: {test_metrics.get('test_average_precision', 0):.4f}")
-        print("-" * 60)
-        print(f"📊 Matrice di confusione:")
-        cm = test_metrics.get('test_confusion_matrix', {})
-        print(f"   TN: {cm.get('tn', 0)}, FP: {cm.get('fp', 0)}")
-        print(f"   FN: {cm.get('fn', 0)}, TP: {cm.get('tp', 0)}")
-        print("-" * 60)
-        print(f"💾 Modello salvato: {model_path}")
-        print(f"⏱️  Tempo impiegato: {tempo_elaborazione:.2f}s")
-        
-        if alert_triggered:
-            print(f"
-🚨 Allarmi generati durante il test!")
-        else:
-            print(f"
-✅ Nessun allarme supera la soglia ottimale")
-        
-    except DataValidationError as e:
-        logger.error(f"❌ Validazione dati fallita: {e.message}")
-        for err in e.errors:
-            logger.error(f"   {err}")
-        alert_system.trigger_error_alert(e, "train_modello.py")
-        raise
-    except ImportError as e:
-        logger.error(f"❌ Libreria mancante: {e}")
-        alert_system.trigger_error_alert(e, "train_modello.py")
-        raise
-    except FileNotFoundError as e:
-        logger.error(f"❌ File non trovato: {e}")
-        alert_system.trigger_error_alert(e, "train_modello.py")
-        raise
-    except Exception as e:
-        logger.error(f"❌ Errore critico in train_modello.py: {str(e)}", exc_info=True)
-        alert_system.trigger_error_alert(e, "train_modello.py")
-        raise
-
-
 if __name__ == "__main__":
-    main()
+    logger.info("Modulo di training caricato. Da utilizzare tramite run_pipeline.py o l'interfaccia CLI.")

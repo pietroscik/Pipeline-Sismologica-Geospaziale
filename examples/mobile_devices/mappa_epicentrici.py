@@ -12,12 +12,18 @@ df = pd.read_csv(FILE_INPUT)
 print("🧩 Calcolo degli epicentri geometrici per ogni evento...")
 # Calcoliamo la latitudine e longitudine media di tutte le stazioni che hanno attivato lo stesso evento
 # Questo ci dà una stima eccellente dell'epicentro reale del terremoto!
-catalogo_epicentrici = df.groupby('event_id').agg(
-    Lat_Epicentro=('latitude', 'mean'),
-    Lon_Epicentro=('longitude', 'mean'),
-    Stazioni_Attivate=('station', 'nunique'),
-    Data_Ora=('arrival_iso', 'min')
-).reset_index()
+agg_dict = {
+    'Lat_Epicentro': ('latitude', 'mean'),
+    'Lon_Epicentro': ('longitude', 'mean'),
+    'Stazioni_Attivate': ('station', 'nunique')
+}
+if 'arrival_iso' in df.columns:
+    agg_dict['Data_Ora'] = ('arrival_iso', 'min')
+    
+catalogo_epicentrici = df.groupby('event_id').agg(**agg_dict).reset_index()
+
+# Filtriamo epicentri che hanno ereditato coordinate NaN per non corrompere il GIS
+catalogo_epicentrici = catalogo_epicentrici.dropna(subset=['Lat_Epicentro', 'Lon_Epicentro']).copy()
 
 # Prendiamo i terremoti più significativi (es. avvertiti da almeno 5 stazioni) 
 # per non sovraccaricare la mappa web di geojson.io
@@ -35,7 +41,7 @@ for _, row in mappa_filtrata.iterrows():
         "properties": {
             "event_id": row['event_id'],
             "energia_stazioni": int(row['Stazioni_Attivate']),
-           "data_ora": str(row['Data_Ora'])
+           "data_ora": str(row.get('Data_Ora', 'N/A'))
         }
     }
     features.append(feature)

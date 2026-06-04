@@ -16,9 +16,6 @@ sys.path.append(str(PROJECT_ROOT / "mobile"))
 from utils import setup_logger  # noqa: E402
 from data_validator import (
     validate_csv_file,
-    validate_csv_columns,
-    validate_geographic_coordinates,
-    validate_file_exists,
     DataValidationError
 )
 
@@ -315,8 +312,17 @@ Esempi di uso:
         action="store_true",
         help="Pulisce la directory di esecuzione in caso di errore"
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simula l'esecuzione senza lanciare i comandi (dry-run)"
+    )
 
     args = parser.parse_args()
+
+    if args.dry_run:
+        logger.info("Dry run completata.")
+        return
 
     logger.info("=" * 60)
     logger.info("  Pipeline Analisi Dati Sismici Geospaziale")

@@ -40,6 +40,9 @@ soglia_max = df_merged['delta_seconds'].quantile(0.98)
 df_pulito = df_merged[(df_merged['delta_seconds'] >= soglia_min) & (df_merged['delta_seconds'] <= soglia_max)]
 print(f"📊 Dataset pulito: mantenute {len(df_pulito):,} righe su {len(df_merged):,}")
 
+# Rimozione valori NaN sulle coordinate per evitare corruzione dello schema GeoJSON
+df_pulito = df_pulito.dropna(subset=['latitude', 'longitude']).copy()
+
 # 5. ESPORTAZIONE 1: CSV Enriched (Ideale per Excel o QGIS Delimited Text)
 df_pulito.to_csv(OUTPUT_CSV, index=False)
 print(f"💾 Esportato CSV arricchito: {OUTPUT_CSV}")
@@ -60,8 +63,8 @@ for _, row in df_pulito.head(50000).iterrows():
             "station": row['station'],
             "channel": row['channel'],
             "delta_seconds": row['delta_seconds'],
-            "arrival": str(row['arrival_iso']),
-            "elevation": row['elevation']
+            "arrival": str(row.get('arrival_iso', 'N/A')),
+            "elevation": row.get('elevation', 0.0)
         }
     }
     features.append(feature)

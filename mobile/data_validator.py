@@ -8,6 +8,29 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class DataValidationError(Exception):
+    """Exception raised for data validation errors."""
+    def __init__(self, message, errors=None):
+        super().__init__(message)
+        self.message = message
+        self.errors = errors or []
+
+
+def validate_csv_file(file_path, required_columns=None) -> pd.DataFrame:
+    """Validates a CSV file and returns the DataFrame."""
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        raise DataValidationError(f"Could not read CSV file: {e}")
+        
+    if required_columns:
+        missing = [col for col in required_columns if col not in df.columns]
+        if missing:
+            raise DataValidationError("Missing required columns", errors=[f"Missing: {col}" for col in missing])
+            
+    return df
+
+
 def validate_data(df: pd.DataFrame, required_columns: list = None) -> Tuple[bool, str, Optional[pd.DataFrame]]:
     if required_columns is None:
         required_columns = ['event_id', 'station', 'delta_seconds', 'arrival_iso']

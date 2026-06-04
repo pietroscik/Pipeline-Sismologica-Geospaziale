@@ -1,0 +1,51 @@
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy.orm import relationship
+from geoalchemy2 import Geometry
+from .database import Base
+
+class Station(Base):
+    __tablename__ = "stations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String, index=True, nullable=False)
+    network = Column(String, nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    elevation = Column(Float, default=0.0)
+    
+    # Colonna PostGIS per query spaziali (SRID 4326 = WGS 84 / LatLon)
+    geom = Column(Geometry('POINT', srid=4326), nullable=True)
+
+    deltas = relationship("EventDelta", back_populates="station")
+
+
+class SeismicEvent(Base):
+    __tablename__ = "seismic_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(String, unique=True, index=True, nullable=False)
+    origin_time = Column(DateTime, nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    depth = Column(Float, nullable=True)
+    magnitude = Column(Float, nullable=True)
+    
+    # Colonna PostGIS per query spaziali sull'epicentro
+    geom = Column(Geometry('POINT', srid=4326), nullable=True)
+
+    deltas = relationship("EventDelta", back_populates="event")
+
+
+class EventDelta(Base):
+    __tablename__ = "event_deltas"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(Integer, ForeignKey("seismic_events.id"), nullable=False)
+    station_id = Column(Integer, ForeignKey("stations.id"), nullable=False)
+    
+    delta_seconds = Column(Float, nullable=False)
+    pick_time = Column(DateTime, nullable=True)
+    phase = Column(String, nullable=True)
+
+    event = relationship("SeismicEvent", back_populates="deltas")
+    station = relationship("Station", back_populates="deltas")

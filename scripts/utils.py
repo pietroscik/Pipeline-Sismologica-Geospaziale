@@ -65,5 +65,5 @@ def load_csv_with_checks(path: Path, required_columns: set[str]) -> pd.DataFrame
     if missing:
         err_msg = f"Errore: il file {path} è privo delle colonne richieste: {', '.join(sorted(missing))}"
         logger.error(err_msg)
-        raise SystemExit(err_msg)
+        raise ValueError(err_msg)
     return df

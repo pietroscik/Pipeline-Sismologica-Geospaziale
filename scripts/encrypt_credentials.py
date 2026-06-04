@@ -91,11 +91,9 @@ def encrypt_file(input_path: Path, output_path: Path, encryption_key: str) -> No
             line = line.strip()
             if line and not line.startswith('#'):
                 encrypted = encrypt_value(line, encryption_key)
-                encrypted_lines.append(f"{encrypted}
-")
+                encrypted_lines.append(f"{encrypted}")
             else:
-                encrypted_lines.append(f"{line}
-")
+                encrypted_lines.append(f"{line}")
         
         with open(output_path, 'w') as f:
             f.writelines(encrypted_lines)
@@ -118,11 +116,9 @@ def decrypt_file(input_path: Path, output_path: Path, encryption_key: str) -> No
             line = line.strip()
             if line and not line.startswith('#') and line.startswith("ENC:"):
                 decrypted = decrypt_value(line, encryption_key)
-                decrypted_lines.append(f"{decrypted}
-")
+                decrypted_lines.append(f"{decrypted}\n")
             else:
-                decrypted_lines.append(f"{line}
-")
+                decrypted_lines.append(f"{line}\n")
         
         with open(output_path, 'w') as f:
             f.writelines(decrypted_lines)
@@ -196,11 +192,9 @@ def main():
     if args.generate_key:
         key = generate_key()
         print(f"New encryption key: {key}")
-        print("
-Set this as your ENCRYPTION_KEY environment variable:")
+        print("\nSet this as your ENCRYPTION_KEY environment variable:")
         print(f"  export ENCRYPTION_KEY='{key}'")
-        print("
-Add to your .env file:")
+        print("\nAdd to your .env file:")
         print(f"  ENCRYPTION_KEY={key}")
         return
     

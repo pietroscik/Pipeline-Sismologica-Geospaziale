@@ -61,7 +61,7 @@ num = np.sum(z_std * spatial_lag)
 moran_global = (num / den) if den != 0 else 0
 
 # Calcolo LISA locale
-lisa_local = (z_std / (den / n)) * spatial_lag
+lisa_local = (z_std / (den / n)) * spatial_lag if den != 0 else np.zeros_like(z_std)
 
 # Classificazione Quadranti LISA
 quadranti = []
