@@ -26,6 +26,7 @@ Environment Variables:
     MONITOR_MIN_STATIONS: Minimo stazioni richieste (default: 18)
     MONITOR_RISK_THRESHOLD: Soglia rischio (default: 0.7)
     ENVIRONMENT: Ambiente (dev, prod, test)
+    MODEL_VERSION: Versione modello da usare (default: current)
 """
 
 import argparse
@@ -41,12 +42,11 @@ import logging
 import pandas as pd
 import numpy as np
 
-# Import PROJECT_ROOT for consistent path resolution
 from path_utils import PROJECT_ROOT
 
-# Import local modules
 from mobile.alert_system import AlertSystem, AlertConfig, AlertMessage
 from mobile.logging_config import setup_monitoring_logger
+from mobile.model_versioning import ModelVersionManager, get_model_manager
 
 
 # Constants
@@ -76,7 +76,8 @@ class CampiFlegreiMonitor:
         min_stations: int = DEFAULT_MIN_STATIONS,
         risk_threshold: float = DEFAULT_RISK_THRESHOLD,
         dry_run: bool = False,
-        daemon: bool = False
+        daemon: bool = False,
+        model_version: Optional[str] = None
     ):
         self.config_path = config_path or PROJECT_ROOT / "mobile/config/monitor_config.yaml"
         self.interval_seconds = interval_minutes * 60
@@ -84,19 +85,25 @@ class CampiFlegreiMonitor:
         self.risk_threshold = risk_threshold
         self.dry_run = dry_run
         self.daemon = daemon
+        self.model_version = model_version or os.getenv("MODEL_VERSION", "current")
         
         # Setup logging
         self.logger = setup_monitoring_logger("campi_flegrei_monitor")
         
         # Initialize components
         self.alert_system: Optional[AlertSystem] = None
+        self.model: Optional[Any] = None
+        self.model_metadata: Dict[str, Any] = {}
+        
         self._initialize_alert_system()
+        self._load_model()
         
         # Register signal handlers
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
         self.logger.info("Campi Flegrei Monitor initialized")
+        self.logger.info(f"Model version: {self.model_version}")
     
     def _initialize_alert_system(self) -> None:
         """Inizializza il sistema di alert."""
@@ -114,6 +121,20 @@ class CampiFlegreiMonitor:
         except Exception as e:
             self.logger.error(f"Failed to initialize alert system: {e}")
             self.alert_system = None
+    
+    def _load_model(self) -> None:
+        """Carica il modello ML con versioning."""
+        try:
+            # Try to load with versioning system
+            manager = get_model_manager("xgboost")
+            self.model, self.model_metadata = manager.load_model(self.model_version)
+            self.logger.info(f"Model loaded: {self.model_version}")
+            self.logger.info(f"Model metadata: {self.model_metadata}")
+        except Exception as e:
+            self.logger.warning(f"Could not load model with versioning: {e}")
+            self.logger.warning("Will use fallback risk calculation")
+            self.model = None
+            self.model_metadata = {}
     
     def _get_fdsn_client(self):
         """Crea client FDSN per INGV."""
@@ -154,10 +175,9 @@ class CampiFlegreiMonitor:
         
         except Exception as e:
             self.logger.error(f"Error getting stations: {e}")
-            # Return default stations from config
             return [
-                "CAAM", "CAFL", "CAWE", "CBAC", "CBAG", "CCAP", "CFMN", "CMIS", 
-                "CMSN", "CMTS", "CNIS", "COLB", "CPIS", "CPOZ", "CQUE", "CSFT", 
+                "CAAM", "CAFL", "CAWE", "CBAC", "CBAG", "CCAP", "CFMN", "CMIS",
+                "CMSN", "CMTS", "CNIS", "COLB", "CPIS", "CPOZ", "CQUE", "CSFT",
                 "CSOB", "CSTH", "CUMA", "IBCM", "IBRN", "IOCA", "IPSM", "PTMR"
             ]
     
@@ -228,16 +248,12 @@ class CampiFlegreiMonitor:
     
     def _predict_risk(self, df: pd.DataFrame) -> float:
         """Predice il livello di rischio usando il modello ML."""
-        model_path = PROJECT_ROOT / "mobile/models/campi_flegrei_risk_model.pkl"
-        
-        if model_path.exists():
+        if self.model is not None:
             try:
-                import joblib
-                model = joblib.load(model_path)
                 features = df[["mean", "std", "min", "max", "amplitude_range", "hour", "minute"]]
-                risk_scores = model.predict(features)
+                risk_scores = self.model.predict(features)
                 risk = float(np.mean(risk_scores))
-                self.logger.info(f"Predicted risk score (model): {risk:.4f}")
+                self.logger.info(f"Predicted risk score (model {self.model_version}): {risk:.4f}")
                 return risk
             except Exception as e:
                 self.logger.error(f"Error using ML model: {e}")
@@ -277,13 +293,14 @@ class CampiFlegreiMonitor:
         
         try:
             alert_message = AlertMessage(
-                title="🚨 Allarme Campi Flegrei",
+                title="Allarme Campi Flegrei",
                 message=message,
                 severity="high" if risk_score > self.risk_threshold * 1.5 else "medium",
                 metadata={
                     "risk_score": round(risk_score, 4),
                     "stations_count": stations_count,
                     "threshold": self.risk_threshold,
+                    "model_version": self.model_version,
                     "timestamp": datetime.now().isoformat()
                 }
             )
@@ -311,7 +328,8 @@ class CampiFlegreiMonitor:
             "alert_required": alert_required,
             "alert_message": alert_message,
             "stations_count": len(df["station"].unique()),
-            "records_count": len(df)
+            "records_count": len(df),
+            "model_version": self.model_version
         }
         
         with open(results_dir / f"summary_{timestamp}.json", "w") as f:
@@ -389,7 +407,7 @@ class CampiFlegreiMonitor:
 def main():
     parser = argparse.ArgumentParser(description="Campi Flegrei Real-Time Monitor")
     parser.add_argument("--config", type=Path, help="Path to config file")
-    parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_MINUTES, 
+    parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_MINUTES,
                         help="Monitoring interval in minutes")
     parser.add_argument("--min-stations", type=int, default=DEFAULT_MIN_STATIONS,
                         help="Minimum number of stations required")
@@ -401,12 +419,15 @@ def main():
                         help="Daemon mode (auto-restart on error)")
     parser.add_argument("--once", action="store_true",
                         help="Run once and exit")
+    parser.add_argument("--model-version", type=str, default=None,
+                        help="Model version to use (default: current)")
     
     args = parser.parse_args()
     
     interval = int(os.getenv("MONITOR_INTERVAL", str(args.interval)))
     min_stations = int(os.getenv("MONITOR_MIN_STATIONS", str(args.min_stations)))
     risk_threshold = float(os.getenv("MONITOR_RISK_THRESHOLD", str(args.risk_threshold)))
+    model_version = args.model_version or os.getenv("MODEL_VERSION")
     
     monitor = CampiFlegreiMonitor(
         config_path=args.config,
@@ -414,7 +435,8 @@ def main():
         min_stations=min_stations,
         risk_threshold=risk_threshold,
         dry_run=args.dry_run,
-        daemon=args.daemon
+        daemon=args.daemon,
+        model_version=model_version
     )
     
     if args.once:
