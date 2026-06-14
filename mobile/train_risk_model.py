@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Addestramento Modello ML per Monitoraggio Campi Flegrei - Issue #4
+Addestramento Modello ML per Monitoraggio Campi Flegrei - Issue #4 & #6
 
 Script per addestrare un modello di predizione del rischio sismico
-usando i dati storici disponibili.
+usando i dati storici disponibili, con integrazione versioning (Issue #6).
 
 Usage:
     # Addestramento con dati default
@@ -16,8 +16,12 @@ Usage:
     python mobile/train_risk_model.py --model-type xgboost --test-size 0.3
 
 Output:
-    mobile/models/campi_flegrei_risk_model.pkl
-    mobile/models/training_report.json
+    mobile/models/{model_type}/v1_YYYYMMDD/
+        model.joblib
+        metadata.json
+        performance.json
+    
+    MLflow tracking (se installato)
 """
 
 import argparse
@@ -33,14 +37,12 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 import joblib
 
-# Import PROJECT_ROOT for consistent path resolution
 from path_utils import PROJECT_ROOT
+from mobile.model_versioning import ModelVersionManager, get_model_manager
 
 
 # Constants
-DEFAULT_INPUT = PROJECT_ROOT / "examples/mobile_devices/scoperte_automatiche.csv.gz"
-DEFAULT_MODEL_PATH = PROJECT_ROOT / "mobile/models/campi_flegrei_risk_model.pkl"
-DEFAULT_REPORT_PATH = PROJECT_ROOT / "mobile/models/training_report.json"
+DEFAULT_INPUT = PROJECT_ROOT / "examples" / "mobile_devices" / "scoperte_automatiche.csv.gz"
 
 # Feature columns (deve corrispondere a monitor_config.yaml)
 FEATURE_COLUMNS = ["mean", "std", "min", "max", "amplitude_range", "hour", "minute"]
@@ -61,13 +63,7 @@ def load_data(input_path: Path) -> pd.DataFrame:
 
 
 def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    """
-    Pre-elabora i dati per l'addestramento.
-    
-    Returns:
-        tuple: (features, target)
-    """
-    # Make a copy to avoid modifying original
+    """Pre-elabora i dati per l'addestramento."""
     df = df.copy()
     
     # Convert timestamp if exists
@@ -80,7 +76,6 @@ def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
         df["hour"] = df["starttime"].dt.hour
         df["minute"] = df["starttime"].dt.minute
     else:
-        # If no timestamp, use random hour/minute for training
         np.random.seed(42)
         df["hour"] = np.random.randint(0, 24, size=len(df))
         df["minute"] = np.random.randint(0, 60, size=len(df))
@@ -89,7 +84,6 @@ def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     if "max" in df.columns and "min" in df.columns:
         df["amplitude_range"] = df["max"] - df["min"]
     else:
-        # Create synthetic amplitude_range if not exists
         df["amplitude_range"] = df["std"] * 2 if "std" in df.columns else 1.0
     
     # Select features
@@ -101,16 +95,13 @@ def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     features = df[available_features]
     
     # Create target: normalized risk score (0-1)
-    # If 'delta' or 'risk' column exists, use it
     if "delta" in df.columns:
-        # Normalize delta to 0-1 range
         delta_min = df["delta"].min()
         delta_max = df["delta"].max()
         target = (df["delta"] - delta_min) / (delta_max - delta_min + 1e-10)
     elif "risk" in df.columns:
         target = df["risk"]
     else:
-        # Create synthetic target based on std and amplitude
         target = (df["std"] / df["std"].max()) * 0.5 + (df["amplitude_range"] / df["amplitude_range"].max()) * 0.5
     
     return features, target
@@ -122,18 +113,7 @@ def train_model(
     model_type: str = "random_forest",
     random_state: int = 42
 ) -> Any:
-    """
-    Addestra un modello di Machine Learning.
-    
-    Args:
-        X_train: Feature matrix
-        y_train: Target vector
-        model_type: Tipo di modello ('random_forest', 'xgboost')
-        random_state: Seed per riproducibilita
-        
-    Returns:
-        Modello addestrato
-    """
+    """Addestra un modello di Machine Learning."""
     if model_type == "xgboost":
         try:
             from xgboost import XGBRegressor
@@ -180,40 +160,10 @@ def evaluate_model(model, X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, 
     return metrics
 
 
-def save_model(model, model_path: Path) -> None:
-    """Salva il modello su disco."""
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, model_path)
-    print(f"Model saved to: {model_path}")
-
-
-def save_report(
-    report: Dict[str, Any],
-    report_path: Path,
-    model_type: str,
-    training_time: float
-) -> None:
-    """Salva il report di addestramento."""
-    report["metadata"] = {
-        "timestamp": datetime.now().isoformat(),
-        "model_type": model_type,
-        "training_time_seconds": training_time,
-        "feature_columns": FEATURE_COLUMNS
-    }
-    
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(report_path, "w") as f:
-        json.dump(report, f, indent=2)
-    
-    print(f"Report saved to: {report_path}")
-
-
 def main():
     parser = argparse.ArgumentParser(description="Train ML model for Campi Flegrei monitoring")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT,
                         help="Input CSV file with training data")
-    parser.add_argument("--output", type=Path, default=DEFAULT_MODEL_PATH,
-                        help="Output path for trained model")
     parser.add_argument("--model-type", type=str, default="random_forest",
                         choices=["random_forest", "xgboost"],
                         help="Type of ML model to train")
@@ -223,20 +173,33 @@ def main():
                         help="Random seed for reproducibility")
     parser.add_argument("--force", action="store_true",
                         help="Force retraining even if model exists")
+    parser.add_argument("--no-mlflow", action="store_true",
+                        help="Disable MLflow tracking")
+    parser.add_argument("--version", type=str, default=None,
+                        help="Custom version name (default: auto-generated)")
     
     args = parser.parse_args()
     
+    # Initialize version manager
+    manager = ModelVersionManager(
+        model_type=args.model_type,
+        use_mlflow=not args.no_mlflow
+    )
+    
     # Check if model already exists
-    if args.output.exists() and not args.force:
-        print(f"Model already exists at {args.output}")
+    latest_version = manager.get_latest_version()
+    if latest_version and not args.force:
+        print(f"Latest model version: {latest_version}")
         print("Use --force to retrain")
         return
     
     # Load data
     start_time = datetime.now()
+    print(f"Loading data...")
     df = load_data(args.input)
     
     # Preprocess
+    print(f"Preprocessing data...")
     features, target = preprocess_data(df)
     
     # Split data
@@ -256,38 +219,60 @@ def main():
     
     # Evaluate
     metrics = evaluate_model(model, X_test, y_test)
-    print("
-Evaluation Metrics:")
+    print("\nEvaluation Metrics:")
     for metric, value in metrics.items():
         print(f"  {metric.upper()}: {value:.4f}")
     
-    # Save model
-    save_model(model, args.output)
-    
-    # Save report
-    report = {
-        "metrics": metrics,
-        "training": {
-            "samples": len(X_train),
-            "features": list(features.columns),
-            "target_range": {
-                "min": float(target.min()),
-                "max": float(target.max()),
-                "mean": float(target.mean())
-            }
-        },
-        "test": {
-            "samples": len(X_test)
+    # Prepare metadata and performance
+    metadata = {
+        "model_type": args.model_type,
+        "dataset": str(args.input),
+        "training_samples": len(X_train),
+        "test_samples": len(X_test),
+        "training_time_seconds": training_time,
+        "timestamp": datetime.now().isoformat(),
+        "features": list(features.columns),
+        "target_stats": {
+            "min": float(target.min()),
+            "max": float(target.max()),
+            "mean": float(target.mean())
         }
     }
     
-    save_report(report, DEFAULT_REPORT_PATH, args.model_type, training_time)
+    performance = metrics
+    
+    # Save with versioning
+    print(f"\nSaving model with versioning...")
+    version = manager.save_model(
+        model=model,
+        metadata=metadata,
+        performance=performance,
+        version=args.version,
+        params={
+            "model_type": args.model_type,
+            "n_estimators": 100,
+            "max_depth": 10 if args.model_type == "random_forest" else 6,
+            "random_state": args.random_state
+        },
+        tags={
+            "dataset": args.input.name,
+            "model_type": args.model_type
+        }
+    )
     
     total_time = (datetime.now() - start_time).total_seconds()
-    print(f"
-Total time: {total_time:.2f} seconds")
-    print("
-Model ready for use with monitor_campi_flegrei.py!")
+    print(f"\nTotal time: {total_time:.2f} seconds")
+    print(f"Model saved as version: {version}")
+    print(f"Model directory: {manager.models_dir / version}")
+    
+    # List all versions
+    versions = manager.list_versions()
+    print(f"\nAll versions:")
+    for v in versions:
+        marker = " [CURRENT]" if v["is_current"] else ""
+        print(f"  - {v['version']}{marker}")
+    
+    print("\nModel ready for use with monitor_campi_flegrei.py!")
 
 
 if __name__ == "__main__":
