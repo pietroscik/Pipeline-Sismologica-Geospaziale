@@ -174,6 +174,13 @@ with st.sidebar:
                 delta_range = st.slider("Filtra per Delta (secondi)", min_value=min_d, max_value=max_d, value=(min_d, max_d))
         search_station = st.text_input("🔍 Cerca Stazione (es. CAAM)", help="Filtra per nome della stazione")
 
+
+# Navigazione
+col_nav1, col_nav2 = st.columns([1, 4])
+with col_nav1:
+    if st.button("🚨 Dashboard Allarmi"):
+        st.switch_page("pages/alerts_dashboard.py")
+
 # LOGICA DI ESECUZIONE
 if run_button:
     cmd_pipeline = [
