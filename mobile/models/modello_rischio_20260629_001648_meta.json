@@ -1,0 +1,89 @@
+{
+    "model_type": "xgboost",
+    "params": {
+        "objective": "binary:logistic",
+        "eval_metric": "aucpr",
+        "scale_pos_weight": 1.0,
+        "seed": 42,
+        "verbosity": 0
+    },
+    "best_iteration": 0,
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1_score": 1.0,
+    "roc_auc": 1.0,
+    "average_precision": 1.0,
+    "confusion_matrix": {
+        "tn": 2668,
+        "fp": 0,
+        "fn": 0,
+        "tp": 2668
+    },
+    "classification_report": {
+        "0": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 2668.0
+        },
+        "1": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 2668.0
+        },
+        "accuracy": 1.0,
+        "macro avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 5336.0
+        },
+        "weighted avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 5336.0
+        }
+    },
+    "test_accuracy": 1.0,
+    "test_precision": 1.0,
+    "test_recall": 1.0,
+    "test_f1_score": 1.0,
+    "test_roc_auc": 1.0,
+    "test_average_precision": 1.0,
+    "test_confusion_matrix": {
+        "tn": 668,
+        "fp": 0,
+        "fn": 0,
+        "tp": 47
+    },
+    "test_classification_report": {
+        "0": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 668.0
+        },
+        "1": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 47.0
+        },
+        "accuracy": 1.0,
+        "macro avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 715.0
+        },
+        "weighted avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 715.0
+        }
+    }
+}

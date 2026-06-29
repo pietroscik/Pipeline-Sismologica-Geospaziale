@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 sys.path.append(str(PROJECT_ROOT / "scripts"))
 sys.path.append(str(PROJECT_ROOT / "mobile"))
-from utils import setup_logger  # noqa: E402
+from scripts.utils import setup_logger  # noqa: E402
 from data_validator import (
     validate_csv_file,
     DataValidationError

@@ -4,6 +4,7 @@ import time
 import logging
 import joblib
 import json
+from imblearn.over_sampling import SMOTE
 from pathlib import Path
 from typing import Tuple, Dict, Optional, Any
 from datetime import datetime
@@ -88,48 +89,18 @@ def load_data(dataset_path: str = "dataset_ml_sismico.csv") -> pd.DataFrame:
     
     return df
 
-
 def split_data_temporal(df: pd.DataFrame, test_size: float = 0.2, random_state: int = 42) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Suddivisione temporale dei dati (non casuale per mantenere l'ordine temporale).
+    # IMPORTA TRAIN_TEST_SPLIT
+    from sklearn.model_selection import train_test_split
     
-    Args:
-        df: DataFrame con indice temporale
-        test_size: Percentuale di dati per il test (0-1)
-        random_state: Seed per riproducibilità (non usato in split temporale)
-    
-    Returns:
-        train, test: DataFrame di training e test
-    
-    Raises:
-        DataValidationError: Se il dataset e' troppo piccolo
-    """
-    if len(df) == 0:
-        raise DataValidationError("Dataset vuoto, impossibile suddividere", errors=["Empty dataset"])
-    
-    # Check test_size is valid
-    if not 0 < test_size < 1:
-        raise ValueError(f"test_size deve essere compreso tra 0 e 1, ricevuto: {test_size}")
-    
-    # Calcola il punto di split
-    split_idx = int(len(df) * (1 - test_size))
-    
-    if split_idx == 0:
-        raise DataValidationError(
-            "Dataset troppo piccolo per suddivisione",
-            errors=[f"Dataset has only {len(df)} rows, need at least {int(1/test_size)}"]
-        )
-    
-    train = df.iloc[:split_idx].copy()
-    test = df.iloc[split_idx:].copy()
-    
-    # Validate splits
-    if len(train) == 0:
-        raise DataValidationError("Train set vuoto dopo split")
-    if len(test) == 0:
-        raise DataValidationError("Test set vuoto dopo split")
-    
-    logger.info(f"📚 Train: {len(train)} record, Test: {len(test)} record")
+    logger.info("⚖️ Esecuzione split stratificato per garantire presenza classi...")
+    # Stratify garantisce che la proporzione di 0 e 1 sia mantenuta in train e test
+    train, test = train_test_split(
+        df, 
+        test_size=test_size, 
+        stratify=df['Target_Allarme'], 
+        random_state=random_state
+    )
     return train, test
 
 
@@ -196,6 +167,18 @@ def prepare_features(
     logger.debug(f"Feature: {feature_columns}")
     
     return X, y
+
+def apply_smote(X: pd.DataFrame, y: pd.Series) -> Tuple[pd.DataFrame, pd.Series]:
+    """Applica SMOTE per bilanciare le classi."""
+    logger.info("⚖️ Applicazione SMOTE per bilanciamento classi...")
+    # Gestione NaN prima di SMOTE
+    X = X.fillna(0)
+    
+    sm = SMOTE(random_state=42)
+    X_res, y_res = sm.fit_resample(X, y)
+    
+    logger.info(f"   Originali: {len(X)}, Bilanciati: {len(X_res)}")
+    return X_res, y_res
 
 
 def train_xgboost(
@@ -602,6 +585,36 @@ def save_model(
         logger.info(f"✅ Metadati salvati in: {meta_path}")
         
     return model_path
-
 if __name__ == "__main__":
-    logger.info("Modulo di training caricato. Da utilizzare tramite run_pipeline.py o l'interfaccia CLI.")
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-csv", required=True)
+    parser.add_argument("--model-type", default="xgboost")
+    parser.add_argument("--output-dir", default="mobile/models")
+    parser.add_argument("--final-train", action="store_true")
+    args = parser.parse_args()
+
+    # Carica
+    df = load_data(args.input_csv)
+    
+    if args.final_train:
+        logger.info("🚀 Modalità FINAL TRAIN: addestramento sul 100% dei dati")
+        X_train, y_train = prepare_features(df)
+        X_train, y_train = apply_smote(X_train, y_train)
+        X_test, y_test = None, None
+    else:
+        train, test = split_data_temporal(df)
+        X_train, y_train = prepare_features(train)
+        X_test, y_test = prepare_features(test)
+        X_train, y_train = apply_smote(X_train, y_train)
+
+    # Train
+    if args.model_type == "xgboost":
+        model, results = train_xgboost(X_train, y_train, X_test, y_test)
+    else:
+        model, results = train_random_forest(X_train, y_train, X_test, y_test)
+
+    # Salva
+    save_model(model, Path(args.output_dir), metadata=results)
+
+

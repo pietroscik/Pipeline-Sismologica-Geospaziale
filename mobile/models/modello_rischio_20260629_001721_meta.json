@@ -1,0 +1,50 @@
+{
+    "model_type": "xgboost",
+    "params": {
+        "objective": "binary:logistic",
+        "eval_metric": "aucpr",
+        "scale_pos_weight": 1.0,
+        "seed": 42,
+        "verbosity": 0
+    },
+    "best_iteration": 0,
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1_score": 1.0,
+    "roc_auc": 1.0,
+    "average_precision": 1.0,
+    "confusion_matrix": {
+        "tn": 3336,
+        "fp": 0,
+        "fn": 0,
+        "tp": 3336
+    },
+    "classification_report": {
+        "0": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 3336.0
+        },
+        "1": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 3336.0
+        },
+        "accuracy": 1.0,
+        "macro avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 6672.0
+        },
+        "weighted avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 6672.0
+        }
+    }
+}
