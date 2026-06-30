@@ -58,7 +58,7 @@ def plot_interpolated(
         x.min():x.max():complex(0, grid_points),
         y.min():y.max():complex(0, grid_points),
     ]
-    grid_z = griddata((x, y), z, (grid_x, grid_y), method=args.method)
+    grid_z = griddata((x, y), z, (grid_x, grid_y), method="cubic")  # TODO: usare args.method quando disponibile
 
     fig, ax = plt.subplots(figsize=(8, 6))
     im = ax.imshow(

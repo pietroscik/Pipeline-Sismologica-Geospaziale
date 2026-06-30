@@ -203,8 +203,7 @@ def main() -> None:
         if args.dir:
             logger.info(f"Elaborato: {fpath.name}")
         else:
-            logger.info("
-" + json.dumps(summary, indent=2))
+            logger.info(json.dumps(summary, indent=2))
 
     if args.dir and output_csv and all_summaries:
         df = pd.DataFrame(all_summaries)

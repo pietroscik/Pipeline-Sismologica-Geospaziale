@@ -1,0 +1,124 @@
+{
+  "summary": {
+    "total_tests": 16,
+    "passed": 14,
+    "failed": 2,
+    "pass_rate": 0.875
+  },
+  "environment": "dev",
+  "timestamp": "2026-06-30T17:10:15.879620",
+  "results": [
+    {
+      "timestamp": "2026-06-30T17:10:13.758702",
+      "test": "Path Resolution",
+      "passed": true,
+      "message": "All path resolution functions work correctly",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.625121",
+      "test": "Module Imports",
+      "passed": true,
+      "message": "All 4 modules imported successfully",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.631924",
+      "test": "Alert System - Default Config",
+      "passed": true,
+      "message": "Default configuration loaded",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.642151",
+      "test": "Alert System - DEV Config",
+      "passed": true,
+      "message": "dev configuration loaded",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.654003",
+      "test": "Alert System - TEST Config",
+      "passed": true,
+      "message": "test configuration loaded",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.668727",
+      "test": "Alert System - PROD Config",
+      "passed": true,
+      "message": "prod configuration loaded",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.675256",
+      "test": "Alert System - Config Validation",
+      "passed": true,
+      "message": "Configuration is valid",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.679691",
+      "test": "Data Validator - Valid Data",
+      "passed": false,
+      "message": "validate_data() missing 1 required positional argument: 'required_columns'",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.680281",
+      "test": "Data Validator - Missing Columns",
+      "passed": false,
+      "message": "validate_data() missing 1 required positional argument: 'required_columns'",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.685191",
+      "test": "Data Validator - Geographic Coordinates",
+      "passed": true,
+      "message": "Correctly detected invalid coordinates: Invalid latitude values",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.687212",
+      "test": "Data Validator - Valid Coordinates",
+      "passed": true,
+      "message": "Valid coordinates accepted: OK",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.862839",
+      "test": "Encryption - Basic",
+      "passed": true,
+      "message": "Encryption and decryption work",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.864320",
+      "test": "Encryption - Credentials",
+      "passed": true,
+      "message": "Credential encryption works",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.869163",
+      "test": "Multi-Environment - DEV",
+      "passed": true,
+      "message": "Environment correctly set to dev",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.874113",
+      "test": "Multi-Environment - TEST",
+      "passed": true,
+      "message": "Environment correctly set to test",
+      "details": {}
+    },
+    {
+      "timestamp": "2026-06-30T17:10:15.879199",
+      "test": "Multi-Environment - PROD",
+      "passed": true,
+      "message": "Environment correctly set to prod",
+      "details": {}
+    }
+  ]
+}

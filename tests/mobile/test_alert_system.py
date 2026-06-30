@@ -65,9 +65,7 @@ webhook_enabled: false
         dev_config = tmp_path / "alert_config.dev.yaml"
         dev_config.write_text("email_enabled: true")      
         prod_config = tmp_path / "alert_config.prod.yaml"
-        prod_config.write_text("email_enabled: false
-webhook_enabled: true
-")
+        prod_config.write_text("email_enabled: false\nwebhook_enabled: true")
         
         # Mock PROJECT_ROOT to use tmp_path
         with patch('mobile.alert_system.PROJECT_ROOT', tmp_path):
