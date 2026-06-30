@@ -186,7 +186,7 @@ def train_xgboost(
     y_train: pd.Series,
     X_test: pd.DataFrame = None,
     y_test: pd.Series = None,
-    early_stopping_rounds: int = args.early_stopping,
+    early_stopping_rounds: int = 10,
     eval_metric: str = "aucpr",
     class_weight: str = "balanced",
     random_state: int = 42

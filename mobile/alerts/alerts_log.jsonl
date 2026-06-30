@@ -1,0 +1,4 @@
+{"timestamp": "2026-06-30T17:10:30.502081", "risk_index": 0.8, "threshold": 0.5, "min_stations": 18, "level": "HIGH", "message": "Alert: HIGH - Risk: 0.80 - Stations: 18", "additional_info": {}}
+{"timestamp": "2026-06-30T17:10:30.532460", "risk_index": 0.95, "threshold": 0.7, "min_stations": 18, "level": "CRITICAL", "message": "Alert: CRITICAL - Risk: 0.95 - Stations: 18", "additional_info": {}}
+{"timestamp": "2026-06-30T17:10:30.544620", "risk_index": 0.8, "threshold": 0.7, "min_stations": 18, "level": "HIGH", "message": "Alert: HIGH - Risk: 0.80 - Stations: 18", "additional_info": {}}
+{"timestamp": "2026-06-30T17:10:30.805996", "level": "CRITICAL", "type": "ERROR", "message": "Critical Error in test_context: Test error", "error_type": "ValueError", "error_details": "Test error"}
