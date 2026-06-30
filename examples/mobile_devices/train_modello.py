@@ -186,7 +186,7 @@ def train_xgboost(
     y_train: pd.Series,
     X_test: pd.DataFrame = None,
     y_test: pd.Series = None,
-    early_stopping_rounds: int = 10,
+    early_stopping_rounds: int = args.early_stopping,
     eval_metric: str = "aucpr",
     class_weight: str = "balanced",
     random_state: int = 42
@@ -588,10 +588,19 @@ def save_model(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-csv", required=True)
-    parser.add_argument("--model-type", default="xgboost")
-    parser.add_argument("--output-dir", default="mobile/models")
-    parser.add_argument("--final-train", action="store_true")
+    parser.add_argument("--input-csv", "--dataset", required=True, help="Dataset CSV di input")
+    parser.add_argument("--model-type", default="xgboost", help="Tipo di modello (xgboost, random_forest)")
+    parser.add_argument("--output-dir", "--model-output", default="mobile/models", help="Cartella di output per il modello")
+    parser.add_argument("--final-train", action="store_true", help="Addestra sul 100% dei dati")
+
+    # Parametri avanzati per compatibilità
+    parser.add_argument("--epochs", type=int, default=1000, help="Numero di epoche (solo per XGBoost)")
+    parser.add_argument("--batch-size", type=int, default=32, help="Dimensione batch (mantenuto per compatibilità)")
+    parser.add_argument("--learning-rate", type=float, default=0.01, help="Tasso di apprendimento (mantenuto per compatibilità)")
+    parser.add_argument("--early-stopping", type=int, default=10, help="Early stopping rounds (solo per XGBoost)")
+    parser.add_argument("--validate", action="store_true", help="Esegue validazione incrociata")
+    parser.add_argument("--test-size", type=float, default=0.2, help="Dimensione test set")
+
     args = parser.parse_args()
 
     # Carica
@@ -603,7 +612,7 @@ if __name__ == "__main__":
         X_train, y_train = apply_smote(X_train, y_train)
         X_test, y_test = None, None
     else:
-        train, test = split_data_temporal(df)
+        train, test = split_data_temporal(df, test_size=args.test_size)
         X_train, y_train = prepare_features(train)
         X_test, y_test = prepare_features(test)
         X_train, y_train = apply_smote(X_train, y_train)

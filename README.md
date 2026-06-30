@@ -381,10 +381,10 @@ La pipeline si divide in **4 fasi principali** piu una **Fase Mobile** introdott
 Filtra il catalogo globale delle stazioni in base a un punto focale e un raggio o a un poligono personalizzato.
 
 ```bash
-python scripts/select_stations_spatial.py \
-  --input-csv examples/mobile_devices/stations.csv \
-  --point 40.82 14.14 20.0 \
-  --output-file runs/demo_legacy/selected_stations.txt
+python scripts/select_stations_spatial.py \ 
+  --input-csv examples/mobile_devices/stations.csv \ 
+  --point 40.82 14.14 20 \ 
+  --output-file /tmp/test_selected.txt
 
 # Oppure con poligono da file GeoJSON
 python scripts/select_stations_spatial.py \
@@ -449,11 +449,10 @@ python scripts/analyze_trace.py \
 Calcola lo scarto temporale (delta) per ciascuna traccia rispetto ad un riferimento temporale dell'evento.
 
 ```bash
-python scripts/prepare_science_deltas.py \
-  --events-catalog data/events.csv \
-  --picks-catalog data/picks.csv \
-  --output-csv runs/demo/deltas.csv \
-  --reference median  # Oppure: mean, first
+python scripts/prepare_science_deltas.py 
+  --events-csv data/events.csv 
+  --picks-csv data/picks.csv 
+  --reference median
 
 # Output: CSV con colonne:
 # station, event_id, delta_seconds, channel, pick_time, expected_time

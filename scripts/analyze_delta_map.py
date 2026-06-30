@@ -58,7 +58,7 @@ def plot_interpolated(
         x.min():x.max():complex(0, grid_points),
         y.min():y.max():complex(0, grid_points),
     ]
-    grid_z = griddata((x, y), z, (grid_x, grid_y), method="cubic")
+    grid_z = griddata((x, y), z, (grid_x, grid_y), method=args.method)
 
     fig, ax = plt.subplots(figsize=(8, 6))
     im = ax.imshow(
@@ -241,6 +241,10 @@ def main() -> None:
         help="Se impostato, esporta uno shapefile dei punti.",
     )
     parser.add_argument(
+        "--export-plot", action="store_true",
+        help="Se impostato, esporta i plot (scatter e interpolato).",
+    )
+    parser.add_argument(
         "--anomaly-threshold", type=float, default=map_cfg.get("default_anomaly_threshold", 0.5),
         help="Se impostato, crea un plot evidenziando punti con |delta| >= soglia."
     )
@@ -275,7 +279,7 @@ def main() -> None:
         shapefile_path = outdir / f"delta_points_{args.title_suffix}.shp"
         export_shapefile(df, shapefile_path, epsg=args.epsg)
 
-    if args.anomaly_threshold is not None:
+    if args.anomaly_threshold is not None or args.threshold is not None:
         plot_anomaly_clusters(df, outdir, args.anomaly_threshold, args.title_suffix, epsg=args.epsg)
 
     if args.stats_csv:
