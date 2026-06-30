@@ -1,6 +1,6 @@
 # Ambienti virtuali Python
 venv/
-env/
+.env/
 .venv/
 
 # File temporanei e cache di Python
