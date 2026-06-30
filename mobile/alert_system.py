@@ -43,6 +43,7 @@ class AlertSystem:
     - Email (SMTP)
     - Webhooks (Discord, Slack, Teams, custom)
     - SMS (Twilio)
+    - Telegram
     - Local file logging
     
     Configuration can be provided via:
@@ -88,7 +89,8 @@ class AlertSystem:
     REQUIRED_CONFIG = {
         "email": ["email_smtp", "email_port", "email_user", "email_password", "email_from"],
         "webhook": ["webhook_url"],
-        "sms": ["sms_account_sid", "sms_auth_token", "sms_from", "sms_to"]
+        "sms": ["sms_account_sid", "sms_auth_token", "sms_from", "sms_to"],
+        "telegram": ["telegram_bot_token", "telegram_chat_id"]
     }
     
     def __init__(self, config_path: Optional[str] = None, config: Optional[Dict] = None):
@@ -128,6 +130,9 @@ class AlertSystem:
         self.alerts_log: List[Dict] = []
         self.alerts_dir = PROJECT_ROOT / "mobile" / "alerts"
         self.alerts_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.cooldown_seconds = self.config.get("alert_cooldown_minutes", 60) * 60
+        self.last_alert_time: Optional[datetime] = self._load_last_alert_time()
         
         # Initialize channels
         self._init_channels()
@@ -190,6 +195,19 @@ class AlertSystem:
         if os.getenv('SMS_ENABLED'):
             config['sms_enabled'] = os.getenv('SMS_ENABLED').lower() in ('true', '1', 'yes')
         thresholds = {}
+        # Telegram
+        if os.getenv('TELEGRAM_BOT_TOKEN'):
+            config['telegram_bot_token'] = os.getenv('TELEGRAM_BOT_TOKEN')
+        if os.getenv('TELEGRAM_CHAT_ID'):
+            config['telegram_chat_id'] = os.getenv('TELEGRAM_CHAT_ID')
+        if os.getenv('TELEGRAM_ENABLED'):
+            config['telegram_enabled'] = os.getenv('TELEGRAM_ENABLED').lower() in ('true', '1', 'yes')
+        if os.getenv('ALERT_COOLDOWN_MINUTES'):
+            try:
+                config['alert_cooldown_minutes'] = int(os.getenv('ALERT_COOLDOWN_MINUTES'))
+            except ValueError:
+                logger.warning(f"Invalid ALERT_COOLDOWN_MINUTES value: {os.getenv('ALERT_COOLDOWN_MINUTES')}")
+
         for level in ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']:
             env_var = f'ALERT_THRESHOLD_{level}'
             if os.getenv(env_var):
@@ -283,11 +301,19 @@ class AlertSystem:
                 if not value or (isinstance(value, list) and not value):
                     errors.append(f"SMS configuration incomplete: {key} is required but not set")
         
+        # Check Telegram configuration if enabled
+        if self.config.get("telegram_enabled", False):
+            telegram_required = self.REQUIRED_CONFIG.get("telegram", [])
+            for key in telegram_required:
+                if not self.config.get(key):
+                    errors.append(f"Telegram configuration incomplete: {key} is required but not set")
+        
         # Check if at least one channel is enabled
         if not any([
             self.config.get("email_enabled", False),
             self.config.get("webhook_enabled", False),
-            self.config.get("sms_enabled", False)
+            self.config.get("sms_enabled", False),
+            self.config.get("telegram_enabled", False)
         ]):
             logger.warning("No notification channels are enabled. Alerts will only be logged to file.")
         
@@ -306,6 +332,7 @@ class AlertSystem:
         self.email_enabled = self.config.get("email_enabled", False)
         self.webhook_enabled = self.config.get("webhook_enabled", False)
         self.sms_enabled = self.config.get("sms_enabled", False)
+        self.telegram_enabled = self.config.get("telegram_enabled", False)
         if "alert_thresholds" in self.config:
             # Normalize threshold keys to uppercase
             normalized_thresholds = {}
@@ -315,6 +342,28 @@ class AlertSystem:
         else:
             self.LEVEL_THRESHOLDS = self.DEFAULT_THRESHOLDS.copy()
     
+    def _load_last_alert_time(self) -> Optional[datetime]:
+        """Loads the timestamp of the last non-error alert from the log file."""
+        log_file = self.alerts_dir / "alerts_log.jsonl"
+        if not log_file.exists():
+            return None
+        try:
+            with open(log_file, "r") as f:
+                lines = f.readlines()
+            if not lines:
+                return None
+            # Find the last non-error alert
+            for line in reversed(lines):
+                try:
+                    last_alert = json.loads(line.strip())
+                    if last_alert.get("type") != "ERROR":
+                        return datetime.fromisoformat(last_alert["timestamp"])
+                except (json.JSONDecodeError, KeyError):
+                    continue
+            return None
+        except (IOError, IndexError):
+            return None
+
     def check_threshold(self, risk_index: float, threshold: Optional[float] = None, min_stations: int = 18, additional_info: Optional[Dict] = None) -> bool:
         if threshold is None:
             threshold = self.LEVEL_THRESHOLDS.get("HIGH", 0.7)
@@ -326,6 +375,39 @@ class AlertSystem:
             self._trigger_notifications(alert)
             logger.info(f"Alert triggered: {alert['level']} (risk={risk_index:.2f})")
         return alert_triggered
+
+    def trigger_alert(self, risk_level: float, triggering_stations: int, timestamp: str, threshold: Optional[float] = None):
+        """
+        Triggers an alert if the risk level is above the threshold.
+        This method assumes a cooldown check has been performed externally.
+        """
+        if threshold is None:
+            threshold = self.LEVEL_THRESHOLDS.get("HIGH", 0.7)
+        
+        additional_info = {"trigger_timestamp": timestamp}
+        alert = self._create_alert(risk_level, threshold, triggering_stations, additional_info)
+        
+        self.alerts_log.append(alert)
+        self._save_alert(alert)
+        self.last_alert_time = datetime.fromisoformat(alert["timestamp"]) # Update in-memory state
+        self._trigger_notifications(alert)
+        
+        logger.info(f"Alert triggered: {alert['level']} (risk={risk_level:.2f})")
+        return True
+
+    @property
+    def active_alert(self) -> bool:
+        """Checks if an alert is currently in a cooldown period."""
+        if self.last_alert_time is None:
+            self.last_alert_time = self._load_last_alert_time()
+            if self.last_alert_time is None:
+                return False
+        
+        cooldown = timedelta(seconds=self.cooldown_seconds)
+        if datetime.now() < self.last_alert_time + cooldown:
+            return True
+        
+        return False
     
     def _create_alert(self, risk_index: float, threshold: float, min_stations: int, additional_info: Optional[Dict] = None) -> Dict:
         level = self._get_alert_level(risk_index)
@@ -371,6 +453,8 @@ class AlertSystem:
             self._send_webhook(alert)
         if self.sms_enabled:
             self._send_sms(alert)
+        if self.telegram_enabled:
+            self._send_telegram(alert)
     
     def _send_email(self, alert: Dict) -> None:
         try:
@@ -451,6 +535,36 @@ class AlertSystem:
         except Exception as e:
             logger.error(f"Failed to send SMS alert: {e}")
     
+    def _send_telegram(self, alert: Dict) -> None:
+        """Invia una notifica tramite bot Telegram."""
+        token = self.config.get("telegram_bot_token")
+        chat_id = self.config.get("telegram_chat_id")
+        
+        if not token or not chat_id:
+            logger.warning("Credenziali Telegram (token o chat_id) mancanti, salto notifica.")
+            return
+
+        try:
+            # Formatta il messaggio usando Markdown per una migliore leggibilità
+            risk_index_str = f"{alert.get('risk_index', 0.0):.2%}"
+            threshold_str = f"{alert.get('threshold', 0.0):.2%}"
+            message_text = (
+                f"🌋 *ALLARME SISMICO - LIVELLO {alert['level']}*\n\n"
+                f"*{alert['message']}*\n\n"
+                f"Indice di Rischio: *{risk_index_str}*\n"
+                f"Soglia Attivazione: *{threshold_str}*\n"
+                f"Timestamp: `{alert['timestamp']}`"
+            )
+            
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {"chat_id": chat_id, "text": message_text, "parse_mode": "Markdown"}
+            
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            logger.info(f"Notifica Telegram inviata a chat_id: {chat_id}")
+        except Exception as e:
+            logger.error(f"Errore invio notifica Telegram: {e}")
+
     def trigger_error_alert(self, error: Exception, context: str = "") -> None:
         alert = {
             "timestamp": datetime.now().isoformat(),

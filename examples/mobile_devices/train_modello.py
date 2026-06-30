@@ -10,8 +10,10 @@ from datetime import datetime
 
 # Importa sistema di allarme e configurazione
 import sys
-# Risaliamo di 3 livelli: train_modello.py -> mobile_devices -> examples -> root -> mobile
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "mobile"))
+# Aggiungiamo la root del progetto e la cartella mobile al path per risolvere le dipendenze
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "mobile"))
 from alert_system import AlertSystem, get_alert_system
 from logging_config import setup_logging
 from data_validator import (
@@ -21,7 +23,12 @@ from data_validator import (
 )
 
 # Configura logging
-logger = logging.getLogger(__name__)
+try:
+    logger = setup_logging(__name__)
+except Exception:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Costanti
 DEFAULT_MODEL_TYPE = "xgboost"
@@ -120,6 +127,18 @@ def split_data_temporal(df: pd.DataFrame, test_size: float = 0.2, random_state: 
             errors=[f"Dataset has only {len(df)} rows, need at least {int(1/test_size)}"]
         )
     
+    # Controllo bilanciamento classi per serie temporali fortemente sbilanciate
+    target_col = "Target_Allarme"
+    if target_col in df.columns:
+        if df[target_col].iloc[:split_idx].nunique() < 2:
+            logger.warning("⚠️ Suddivisione temporale sbilanciata: il train set avrebbe una sola classe.")
+            minority_class = df[target_col].value_counts().idxmin()
+            minority_positions = np.where(df[target_col].values == minority_class)[0]
+            if len(minority_positions) > 1:
+                # Sposta lo split a metà delle occorrenze della classe di minoranza
+                split_idx = minority_positions[len(minority_positions) // 2]
+                logger.info(f"🔄 Aggiustamento automatico dello split per includere anomalie nel training (nuovo test_size: {1 - split_idx/len(df):.2f})")
+
     train = df.iloc[:split_idx].copy()
     test = df.iloc[split_idx:].copy()
     
@@ -396,6 +415,265 @@ def train_random_forest(
     return model, results
 
 
+def train_gnn_spatiotemporal(
+    df_features: pd.DataFrame,
+    stations_csv: Path,
+    target_column: str = "Target_Allarme",
+    epochs: int = 100,
+    learning_rate: float = 0.01
+) -> Tuple[Any, Dict]:
+    """
+    [SPERIMENTALE] Addestra una Graph Neural Network (GNN) per dati spaziali sismologici.
+    Richiede: pip install torch torch_geometric
+    
+    Args:
+        df_features: DataFrame con le feature temporali
+        stations_csv: Path al CSV con le coordinate delle stazioni per creare il grafo
+        target_column: Colonna da predire
+    """
+    try:
+        import torch
+        import torch.nn.functional as F
+        from torch_geometric.data import Data
+        from torch_geometric.nn import GCNConv
+    except ImportError:
+        logger.error("❌ Librerie GNN non trovate. Installa con: pip install torch torch_geometric")
+        logger.info("ℹ️ Il modello GNN richiede PyTorch e PyTorch Geometric per elaborare la rete spaziale.")
+        return None, {}
+
+    logger.info("🕸️ Preparazione Grafo Spaziale per GNN...")
+    
+    # 1. COSTRUZIONE MATRICE DI ADIACENZA (ARCHI DEL GRAFO)
+    # Calcoliamo le distanze tra tutte le stazioni per creare i collegamenti (Edges)
+    df_stations = pd.read_csv(stations_csv)
+    
+    edges_source = []
+    edges_target = []
+    edge_weights = []
+    
+    # Creiamo un dizionario per mappare il nome stazione a un ID numerico del nodo
+    station_to_id = {row['station']: idx for idx, row in df_stations.iterrows()}
+    
+    # Creiamo gli archi basandoci sulla vicinanza spaziale (es. raggio di 10km)
+    from geopy.distance import geodesic
+    for i, row1 in df_stations.iterrows():
+        for j, row2 in df_stations.iterrows():
+            if i != j:
+                dist_km = geodesic((row1['latitude'], row1['longitude']), 
+                                   (row2['latitude'], row2['longitude'])).kilometers
+                if dist_km < 10.0:  # Collega stazioni vicine
+                    edges_source.append(i)
+                    edges_target.append(j)
+                    edge_weights.append(1.0 / (dist_km + 0.1)) # Peso inversamente prop. alla distanza
+
+    edge_index = torch.tensor([edges_source, edges_target], dtype=torch.long)
+    edge_attr = torch.tensor(edge_weights, dtype=torch.float)
+
+    # ==========================================
+    # ARCHITETTURA MODELLO GRAFO (GraphSAGE / GCN)
+    # ==========================================
+    class SeismicGNN(torch.nn.Module):
+        def __init__(self, num_node_features):
+            super(SeismicGNN, self).__init__()
+            # Prima convoluzione spaziale: aggrega le informazioni dalle stazioni vicine
+            self.conv1 = GCNConv(num_node_features, 16)
+            # Seconda convoluzione spaziale per pattern più a lungo raggio
+            self.conv2 = GCNConv(16, 8)
+            # Layer finale di classificazione
+            self.classifier = torch.nn.Linear(8, 1)
+
+        def forward(self, x, edge_index, edge_weight):
+            # Passaggio 1: Aggregazione vicinato con attivazione ReLU
+            x = self.conv1(x, edge_index, edge_weight)
+            x = F.relu(x)
+            x = F.dropout(x, p=0.2, training=self.training)
+            
+            # Passaggio 2: Aggregazione livello 2
+            x = self.conv2(x, edge_index, edge_weight)
+            x = F.relu(x)
+            
+            # Passaggio 3: Classificazione rischio sismico
+            out = self.classifier(x)
+            return torch.sigmoid(out)
+
+    # NOTA: L'implementazione completa richiederebbe la trasformazione di df_features 
+    # in tensori per ogni timestamp temporale.
+    logger.info(f"✅ Grafo Costruito: {len(station_to_id)} Nodi, {len(edges_source)} Archi.")
+    logger.warning("⚠️ L'addestramento GNN completo richiede l'integrazione col loop temporale.")
+    
+    # Simuliamo i risultati da restituire alla pipeline
+    results = {
+        "model_type": "gnn_gcn",
+        "nodes": len(station_to_id),
+        "edges": len(edges_source),
+        "params": {"epochs": epochs, "learning_rate": learning_rate},
+        "status": "architettura_inizializzata"
+    }
+    
+    return SeismicGNN, results
+
+
+def create_temporal_sequences(
+    X: pd.DataFrame,
+    y: pd.Series,
+    sequence_length: int = 10
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Converte dataset tabellari 2D in sequenze temporali 3D usando una finestra scorrevole.
+    
+    Args:
+        X: Feature matrix (deve essere ordinata cronologicamente)
+        y: Target vector
+        sequence_length: Dimensione della finestra temporale (lookback)
+        
+    Returns:
+        X_seq: Array 3D (samples, sequence_length, features)
+        y_seq: Array 1D (samples,)
+    """
+    logger.info(f"🔄 Estrazione finestre temporali 3D (lookback={sequence_length})...")
+    if len(X) < sequence_length:
+        raise DataValidationError(f"Dataset troppo piccolo per sequence_length={sequence_length}")
+        
+    X_array, y_array = X.values, y.values
+    X_seq, y_seq = [], []
+    
+    for i in range(len(X) - sequence_length + 1):
+        X_seq.append(X_array[i : i + sequence_length])
+        y_seq.append(y_array[i + sequence_length - 1])
+        
+    X_np, y_np = np.array(X_seq, dtype=np.float32), np.array(y_seq, dtype=np.float32)
+    logger.info(f"✅ Trasformazione completata: 2D {X.shape} -> 3D {X_np.shape}")
+    
+    return X_np, y_np
+
+
+try:
+    import torch
+    import torch.nn as nn
+    class SeismicTransformer(nn.Module):
+        def __init__(self, num_features, d_model=32, nhead=4, num_layers=2):
+            super(SeismicTransformer, self).__init__()
+            self.embedding = nn.Linear(num_features, d_model)
+            encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
+            self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+            self.classifier = nn.Sequential(
+                nn.Linear(d_model, 16),
+                nn.ReLU(),
+                nn.Linear(16, 1)  # Rimosso Sigmoid: usiamo BCEWithLogitsLoss
+            )
+            
+        def forward(self, x):
+            x = self.embedding(x)
+            x = self.transformer_encoder(x)
+            x = x[:, -1, :] 
+            return self.classifier(x)
+except ImportError:
+    SeismicTransformer = None
+
+
+def train_temporal_transformer(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame = None,
+    y_test: pd.Series = None,
+    epochs: int = 50,
+    learning_rate: float = 0.001,
+    sequence_length: int = 10
+) -> Tuple[Any, Dict]:
+    """
+    [SPERIMENTALE] Addestra un modello Transformer (Self-Attention) per l'analisi 
+    delle sequenze temporali dei delta sismici.
+    """
+    try:
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import TensorDataset, DataLoader
+    except ImportError:
+        logger.error("❌ Libreria PyTorch non trovata. Installa con: pip install torch")
+        return None, {}
+        
+    logger.info("🤖 Inizializzazione architettura Temporal Transformer...")
+    
+            
+    # Preparazione dei dati 3D (Sliding Window)
+    X_train_3d, y_train_1d = create_temporal_sequences(X_train, y_train, sequence_length)
+    
+    # Creazione dei tensori e del DataLoader PyTorch per il batching
+    train_dataset = TensorDataset(
+        torch.tensor(X_train_3d), 
+        torch.tensor(y_train_1d).unsqueeze(1)  # Aggiungiamo una dimensione (batch, 1) per il layer Sigmoid
+    )
+    # Nota: Shuffle=True va bene qui per mescolare i batch DURANTE il training, 
+    # poiché l'ordine temporale ALL'INTERNO della singola finestra è già stato "congelato" nel 3D.
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    
+    import torch.optim as optim
+
+    # Istanziazione del modello con il corretto numero di feature
+    model = SeismicTransformer(num_features=X_train.shape[1])
+    logger.info(f"✅ Dati formattati e DataLoader creati. Inizio addestramento Transformer...")
+
+    # Bilanciamento pesi dinamico per lo sbilanciamento delle allerte
+    num_neg = (y_train == 0).sum()
+    num_pos = (y_train == 1).sum()
+    pos_weight = torch.tensor([num_neg / max(num_pos, 1)], dtype=torch.float32)
+    
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    # Preparazione test set (se disponibile)
+    X_test_3d, y_test_1d = None, None
+    if X_test is not None and y_test is not None and len(X_test) >= sequence_length:
+        X_test_3d, y_test_1d = create_temporal_sequences(X_test, y_test, sequence_length)
+        X_test_tensor = torch.tensor(X_test_3d)
+        y_test_tensor = torch.tensor(y_test_1d).unsqueeze(1)
+
+    model.train()
+    for epoch in range(epochs):
+        epoch_loss = 0.0
+        for batch_X, batch_y in train_loader:
+            optimizer.zero_grad()
+            outputs = model(batch_X)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        
+        avg_loss = epoch_loss / len(train_loader)
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            logger.info(f"   Epoca [{epoch+1}/{epochs}] - Train Loss: {avg_loss:.4f}")
+
+    # Calcolo metriche finali
+    logger.info("📊 Calcolo metriche finali...")
+    model.eval()
+    with torch.no_grad():
+        # Predizioni sul train
+        X_train_tensor = torch.tensor(X_train_3d)
+        # Usiamo torch.sigmoid per riconvertire i logits in probabilità 0-1
+        train_preds = torch.sigmoid(model(X_train_tensor)).squeeze().numpy()
+        train_results = calculate_metrics(y_train_1d, train_preds)
+        
+        # Predizioni sul test
+        test_results = {}
+        if X_test_3d is not None:
+            test_preds = torch.sigmoid(model(X_test_tensor)).squeeze().numpy()
+            test_results = calculate_metrics(y_test_1d, test_preds, prefix="test_")
+
+    results = {
+        "model_type": "temporal_transformer",
+        "params": {
+            "epochs": epochs, 
+            "learning_rate": learning_rate, 
+            "sequence_length": sequence_length
+        },
+        **train_results,
+        **test_results
+    }
+    
+    logger.info("✅ Modello Transformer addestrato con successo!")
+    return model, results
+
+
 def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "") -> Dict:
     """
     Calcola varie metriche di classificazione.
@@ -411,7 +689,8 @@ def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "") -
     from sklearn.metrics import (
         accuracy_score, precision_score, recall_score, f1_score,
         roc_auc_score, average_precision_score, confusion_matrix,
-        classification_report
+        classification_report, brier_score_loss, log_loss,
+        matthews_corrcoef, cohen_kappa_score
     )
     
     # Check for valid inputs
@@ -427,11 +706,17 @@ def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "") -
         logger.warning(f"Dimensione mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}")
         return {}
     
+    import warnings
+    from sklearn.exceptions import UndefinedMetricWarning
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+
     # Converte predizioni in classi (soglia 0.5)
     y_pred_class = (y_pred >= 0.5).astype(int)
     
     # Matrice di confusione
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred_class).ravel()
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred_class, labels=[0, 1]).ravel()
     
     # Calculate metrics safely
     try:
@@ -469,6 +754,22 @@ def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "") -
     except:
         class_report = {}
     
+    # Metriche Avanzate per Modelli Sbilanciati / Probabilistici
+    try:
+        brier = brier_score_loss(y_true, y_pred)
+    except:
+        brier = np.nan
+        
+    try:
+        mcc = matthews_corrcoef(y_true, y_pred_class)
+    except:
+        mcc = np.nan
+        
+    try:
+        kappa = cohen_kappa_score(y_true, y_pred_class)
+    except:
+        kappa = np.nan
+    
     metrics = {
         f"{prefix}accuracy": accuracy,
         f"{prefix}precision": precision,
@@ -476,6 +777,9 @@ def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "") -
         f"{prefix}f1_score": f1,
         f"{prefix}roc_auc": roc_auc,
         f"{prefix}average_precision": avg_precision,
+        f"{prefix}brier_score": brier,
+        f"{prefix}mcc": mcc,
+        f"{prefix}cohen_kappa": kappa,
         f"{prefix}confusion_matrix": {
             "tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)
         },
@@ -483,6 +787,37 @@ def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "") -
     }
     
     return metrics
+
+
+def compare_models_performance(models_results: Dict[str, Dict]) -> pd.DataFrame:
+    """
+    Confronta le metriche di più modelli e restituisce un DataFrame formattato.
+    
+    Args:
+        models_results: Dizionario con struttura {nome_modello: risultati_da_train_fun}
+    """
+    logger.info("📊 Generazione Tabella di Confronto Modelli...")
+    records = []
+    
+    for model_name, res in models_results.items():
+        record = {"Modello": model_name.upper()}
+        # Cerca metriche di test (prioritarie) o metriche di training come ripiego
+        prefix = "test_" if any(k.startswith("test_") for k in res.keys()) else ""
+        
+        record["F1-Score"] = res.get(f"{prefix}f1_score", np.nan)
+        record["ROC-AUC"] = res.get(f"{prefix}roc_auc", np.nan)
+        record["PR-AUC"] = res.get(f"{prefix}average_precision", np.nan)
+        record["MCC"] = res.get(f"{prefix}mcc", np.nan)
+        record["Cohen Kappa"] = res.get(f"{prefix}cohen_kappa", np.nan)
+        record["Brier Score (↓)"] = res.get(f"{prefix}brier_score", np.nan)
+        
+        records.append(record)
+        
+    df_compare = pd.DataFrame(records).set_index("Modello")
+    # Ordiniamo in base all'F1-Score (o potresti farlo in base all'MCC)
+    df_compare = df_compare.sort_values(by="F1-Score", ascending=False).round(4)
+    
+    return df_compare
 
 
 def find_optimal_threshold(
@@ -589,9 +924,15 @@ def save_model(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_path = model_dir / f"{model_name}_{timestamp}.pkl"
     
-    # Salvataggio tramite joblib
-    joblib.dump(model, model_path)
-    logger.info(f"✅ Modello salvato in: {model_path}")
+    # Salvataggio Dinamico: Joblib per modelli classici, Torch Save per Deep Learning
+    if "torch" in str(type(model)):
+        import torch
+        model_path = model_dir / f"{model_name}_{timestamp}.pth"
+        torch.save(model.state_dict(), model_path)
+        logger.info(f"✅ Modello PyTorch salvato in: {model_path}")
+    else:
+        joblib.dump(model, model_path)
+        logger.info(f"✅ Modello Machine Learning salvato in: {model_path}")
     
     # Salvataggio metadati (se presenti)
     if metadata:
@@ -604,4 +945,88 @@ def save_model(
     return model_path
 
 if __name__ == "__main__":
-    logger.info("Modulo di training caricato. Da utilizzare tramite run_pipeline.py o l'interfaccia CLI.")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Addestramento e confronto modelli ML sismici")
+    parser.add_argument("--dataset", type=str, default="dataset_ml_sismico.csv", help="Dataset di input")
+    parser.add_argument("--model-output-dir", type=Path, default=Path("mobile/models"), help="Directory di output per i modelli")
+    parser.add_argument("--model-output-name", type=str, default="modello_rischio", help="Nome base per i file del modello")
+    parser.add_argument("--model-type", type=str, default="compare", help="Tipo di modello (xgboost, random_forest, transformer, compare)")
+    parser.add_argument("--epochs", type=int, default=50, help="Numero di epoche per Deep Learning")
+    parser.add_argument("--learning-rate", type=float, default=0.001, help="Learning rate")
+    parser.add_argument("--sequence-length", type=int, default=10, help="Lunghezza sequenza per Transformer")
+    parser.add_argument("--generate-alerts", action="store_true", help="Genera allarmi se ci sono anomalie")
+    args = parser.parse_args()
+    
+    logger.info("🚀 Avvio del modulo di training e confronto modelli...")
+    
+    try:
+        # 1. Caricamento Dati
+        df = load_data(args.dataset)
+        
+        # 2. Suddivisione Temporale
+        df_train, df_test = split_data_temporal(df, test_size=0.2)
+        
+        # 3. Preparazione Feature
+        X_train, y_train = prepare_features(df_train)
+        X_test, y_test = prepare_features(df_test)
+        
+        results_dict = {}
+        best_model = None
+        best_model_name = ""
+        best_f1 = -1.0
+        
+        # 4. Addestramento dei modelli specificati
+        if args.model_type in ["xgboost", "compare"]:
+            model_xgb, res_xgb = train_xgboost(X_train, y_train, X_test, y_test)
+            if model_xgb:
+                results_dict["xgboost"] = res_xgb
+                f1 = res_xgb.get("test_f1_score", 0)
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_model = model_xgb
+                    best_model_name = "xgboost"
+
+        if args.model_type in ["random_forest", "compare"]:
+            model_rf, res_rf = train_random_forest(X_train, y_train, X_test, y_test)
+            if model_rf:
+                results_dict["random_forest"] = res_rf
+                f1 = res_rf.get("test_f1_score", 0)
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_model = model_rf
+                    best_model_name = "random_forest"
+                
+        if args.model_type in ["transformer", "compare"]:
+            model_tf, res_tf = train_temporal_transformer(
+                X_train, y_train, X_test, y_test, 
+                epochs=args.epochs, 
+                learning_rate=args.learning_rate, 
+                sequence_length=args.sequence_length
+            )
+            if model_tf:
+                results_dict["transformer"] = res_tf
+                f1 = res_tf.get("test_f1_score", 0)
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_model = model_tf
+                    best_model_name = "transformer"
+                
+        # 5. Generazione Tabella di Confronto
+        if results_dict:
+            df_comparison = compare_models_performance(results_dict)
+            logger.info("\n🏆 CLASSIFICA MODELLI:\n\n" + df_comparison.to_string())
+            
+            # Salva la classifica su disco per future consultazioni
+            output_dir = args.model_output_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
+            df_comparison.to_csv(output_dir / "classifica_modelli.csv")
+            
+            # 6. Salvataggio del modello migliore
+            if best_model is not None:
+                save_model(best_model, model_dir=output_dir, model_name=f"best_{best_model_name}_{args.model_output_name}")
+        else:
+            logger.warning("Nessun modello è stato addestrato con successo.")
+            
+    except Exception as e:
+        logger.error(f"Errore durante l'esecuzione del modulo di training: {e}", exc_info=True)

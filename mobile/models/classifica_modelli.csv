@@ -1,0 +1,4 @@
+Modello,F1-Score,ROC-AUC,PR-AUC,MCC,Cohen Kappa,Brier Score (↓)
+XGBOOST,1.0,0.5,0.5,0.0,,0.0003
+RANDOM_FOREST,1.0,0.5,0.5,0.0,,0.0
+TRANSFORMER,1.0,0.5,0.5,0.0,,0.0607

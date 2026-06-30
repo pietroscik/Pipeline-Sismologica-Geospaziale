@@ -12,3 +12,4 @@ contextily
 streamlit
 folium
 streamlit-folium
+requests
