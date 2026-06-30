@@ -54,6 +54,12 @@ def parse_args() -> argparse.Namespace:
         nargs="*",
         help="Lista di network ammessi (es. IV). Se omessa, usa tutti i network.",
     )
+    parser.add_argument(
+        "--reference",
+        default="median",
+        choices=["median", "mean", "first"],
+        help="Metodo per calcolare il tempo di riferimento dell'evento (default: median).",
+    )
     return parser.parse_args()
 
 
@@ -122,7 +128,7 @@ def main() -> None:
     merged["arrival_epoch"] = merged["phase_time"].astype("int64") / 1e9
     merged["arrival_iso"] = merged["phase_time"].dt.strftime("%Y-%m-%d %H:%M:%S.%f%z")
     merged["event_reference_epoch"] = (
-        merged.groupby("event_index")["arrival_epoch"].transform("median")
+        merged.groupby("event_index")["arrival_epoch"].transform(args.reference)
     )
     merged["delta_seconds"] = merged["arrival_epoch"] - merged["event_reference_epoch"]
 
