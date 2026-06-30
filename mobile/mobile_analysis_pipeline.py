@@ -96,6 +96,13 @@ def parse_arguments():
         help="Finestra temporale per target (ore, default: 24)"
     )
     
+    # Parametri ML (da passare a train_modello.py)
+    parser.add_argument("--epochs", type=int, default=50, help="Numero di epoche per Deep Learning")
+    parser.add_argument("--learning-rate", type=float, default=0.001, help="Learning rate per Deep Learning")
+    parser.add_argument(
+        "--sequence-length", type=int, default=10, help="Lunghezza sequenza per modelli temporali (Transformer)"
+    )
+    
     # Opzioni esecuzione
     parser.add_argument(
         "--generate-alerts",
@@ -104,9 +111,9 @@ def parse_arguments():
     )
     parser.add_argument(
         "--model-type",
-        choices=["xgboost", "random_forest"],
-        default="xgboost",
-        help="Tipo di modello ML (default: xgboost)"
+        choices=["compare", "xgboost", "random_forest", "transformer"],
+        default="compare",
+        help="Tipo di modello ML (default: compare)"
     )
     parser.add_argument(
         "--config",
@@ -426,14 +433,17 @@ def run_mobile_pipeline():
         logger.info("\nFASE 4: Training modello e generazione allarmi...")
         cmd4 = [
             python_exe,
-            str(script_dir / "train_modello.py")
+            str(script_dir / "train_modello.py"),
+            "--model-type", args.model_type,
+            "--model-output-dir", str(args.output_dir / "models"),
+            "--epochs", str(args.epochs),
+            "--learning-rate", str(args.learning_rate),
+            "--sequence-length", str(args.sequence_length),
         ]
         
         # Aggiungi parametri opzionali
         if args.generate_alerts:
             cmd4.append("--generate-alerts")
-        if args.model_type:
-            cmd4.extend(["--model-type", args.model_type])
         
         if not run_command(cmd4, cwd=str(script_dir), timeout=args.timeout * 3):
             logger.error("train_modello.py fallito")
@@ -441,8 +451,8 @@ def run_mobile_pipeline():
                 cleanup_output_directory(args.output_dir)
             sys.exit(1)
         
-        # 7. Copia output in directory finale
-        logger.info("\nCopia output in directory finale...")
+        # 7. Copia i file di output generati dagli script legacy nella directory di output finale
+        logger.info("\nCopia file di output nella directory finale...")
         output_files = [
             "catalogo_terremoti_unici.csv",
             "dataset_ml_sismico.csv",
@@ -457,16 +467,9 @@ def run_mobile_pipeline():
                 shutil.copy(src, dst)
                 logger.info(f"   Copiato: {file}")
         
-        # 8. Copia modelli e allarmi
-        logger.info("\nCopia modelli e log allarmi...")
-        model_dir = PROJECT_ROOT / "mobile" / "models"
+        # 8. Copia i log degli allarmi
+        logger.info("\nCopia log allarmi...")
         alerts_dir = PROJECT_ROOT / "mobile" / "alerts"
-        
-        if model_dir.exists():
-            for model_file in model_dir.glob("*"):
-                shutil.copy(model_file, args.output_dir / "models" / model_file.name)
-                logger.info(f"   Modello: {model_file.name}")
-        
         if alerts_dir.exists():
             for alert_file in alerts_dir.glob("*"):
                 shutil.copy(alert_file, args.output_dir / "alerts" / alert_file.name)

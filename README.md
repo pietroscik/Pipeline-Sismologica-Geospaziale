@@ -273,6 +273,11 @@ EMAIL_PASSWORD=your_app_password
 EMAIL_FROM=your_email@gmail.com
 EMAIL_TO=recipient@example.com
 
+# Telegram
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+
 # ============================================
 # SOGLIE DI ALERT
 # ============================================

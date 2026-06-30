@@ -149,9 +149,9 @@ with st.sidebar:
         
         mobile_model_type = st.selectbox(
             "Tipo Modello ML",
-            options=["xgboost", "random_forest"],
+            options=["compare", "xgboost", "random_forest", "transformer"],
             index=0,
-            help="Seleziona il tipo di modello ML per l'analisi mobile (default: xgboost)"
+            help="Seleziona il tipo di modello ML. Scegliendo 'compare' verranno addestrati tutti e verrà salvato automaticamente il migliore."
         )
         
         mobile_generate_alerts = st.checkbox(
@@ -159,6 +159,22 @@ with st.sidebar:
             value=True,
             help="Genera allarmi attivi (email, webhook, SMS) durante l'analisi mobile"
         )
+
+    st.subheader("🔮 Predizione Live (Inferenza)")
+    live_predict_enabled = st.checkbox("Esegui Predizione Live")
+    if live_predict_enabled:
+        # Cerca i modelli disponibili
+        model_dir = PROJECT_ROOT / "mobile" / "models"
+        available_models = [m.name for m in model_dir.glob("*.pkl")] + [m.name for m in model_dir.glob("*.pth")] if model_dir.exists() else []
+        
+        selected_model = st.selectbox(
+            "Seleziona Modello Addestrato",
+            options=available_models,
+            help="Scegli il modello da usare per calcolare il rischio in tempo reale."
+        )
+        live_data_csv = st.text_input("File Dati (CSV)", value=str(EXAMPLE_LEGACY_DIR / "dataset_ml_sismico.csv"))
+        live_threshold = st.slider("Soglia Allarme Live", min_value=0.0, max_value=1.0, value=0.7, step=0.01)
+        live_predict_button = st.button("🔮 Calcola Rischio Ora", use_container_width=True)
 
     st.markdown("---")
     run_button = st.button("🚀 Avvia Pipeline", type="primary", use_container_width=True)
@@ -283,6 +299,25 @@ if run_button:
             st.error("Errore critico durante l'esecuzione della pipeline!")
             st.code(e.stderr)
             st.stop()
+            
+if 'live_predict_enabled' in locals() and live_predict_enabled and 'live_predict_button' in locals() and live_predict_button and selected_model:
+    cmd_live = [
+        sys.executable, str(PROJECT_ROOT / "scripts" / "predict_live.py"),
+        "--model", str(PROJECT_ROOT / "mobile" / "models" / selected_model),
+        "--data", live_data_csv,
+        "--threshold", str(live_threshold)
+    ]
+    with st.spinner("🔮 Calcolo del rischio in corso..."):
+        try:
+            res_live = subprocess.run(cmd_live, capture_output=True, text=True, check=True)
+            # Estrai la probabilità dall'output per visualizzarla
+            output_lines = res_live.stdout.splitlines() + res_live.stderr.splitlines()
+            st.success("Analisi in Tempo Reale completata!")
+            with st.expander("Mostra Dettagli Predizione Live", expanded=True):
+                st.code("\n".join(output_lines[-15:]))
+        except subprocess.CalledProcessError as e:
+            st.error("Errore durante l'inferenza!")
+            st.code(e.stderr)
 
 # VISUALIZZAZIONE RISULTATI
 st.header("🗺️ Mappa Interattiva delle Stazioni")

@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""
+Script per l'esecuzione notturna automatizzata.
+1. Scarica i dati del giorno precedente (continuous_ingestion.py).
+2. Cerca il modello ML/DL più recente.
+3. Esegue la predizione e lancia eventuali allarmi (predict_live.py).
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+from datetime import datetime, timedelta
+
+from utils import setup_logger, get_project_root
+
+logger = setup_logger("nightly_job")
+PROJECT_ROOT = get_project_root()
+
+def run_command(cmd: list, error_msg: str) -> bool:
+    logger.info(f"Esecuzione comando...")
+    try:
+        subprocess.run(cmd, check=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"{error_msg}. Exit code: {e.returncode}")
+        return False
+
+def main():
+    python_exe = sys.executable
+    
+    # 1. CALCOLO DATE (Finestra temporale: ultime 24 ore)
+    end_dt = datetime.now()
+    start_dt = end_dt - timedelta(days=1)
+    
+    start_str = start_dt.strftime("%Y-%m-%d")
+    end_str = end_dt.strftime("%Y-%m-%d")
+    
+    logger.info("=" * 60)
+    logger.info(f"🌙 AVVIO JOB NOTTURNO: {start_str} -> {end_str}")
+    logger.info("=" * 60)
+
+    # 2. INGESTIONE NUOVI DATI
+    logger.info("Fase 1: Download e ingestione nuovi dati FDSN...")
+    ingestion_cmd = [
+        python_exe, str(PROJECT_ROOT / "scripts" / "continuous_ingestion.py"),
+        "--start-date", start_str,
+        "--end-date", end_str,
+        "--window-days", "1"
+    ]
+    
+    if not run_command(ingestion_cmd, "Errore durante l'ingestione continua"):
+        logger.error("Job notturno interrotto nella fase di ingestione.")
+        sys.exit(1)
+
+    # 3. RICERCA MODELLO AGGIORNATO
+    logger.info("Fase 2: Ricerca ultimo modello ML per l'inferenza...")
+    model_dir = PROJECT_ROOT / "mobile" / "models"
+    
+    if not model_dir.exists():
+        logger.error(f"Cartella modelli non trovata: {model_dir}")
+        sys.exit(1)
+        
+    models = list(model_dir.glob("*.pkl")) + list(model_dir.glob("*.pth"))
+    if not models:
+        logger.error("Nessun modello di Machine/Deep Learning addestrato disponibile!")
+        sys.exit(1)
+        
+    # Prende il modello con la data di modifica (mtime) più recente
+    latest_model = max(models, key=lambda p: p.stat().st_mtime)
+    logger.info(f"Modello selezionato: {latest_model.name}")
+
+    # 4. PREDIZIONE LIVE E ALLARMI
+    logger.info("Fase 3: Calcolo Rischio in tempo reale...")
+    # Usiamo il dataset ML formattato in cui vengono appesi i risultati giornalieri
+    live_data_csv = PROJECT_ROOT / "examples" / "mobile_devices" / "dataset_ml_sismico.csv"
+    
+    predict_cmd = [
+        python_exe, str(PROJECT_ROOT / "scripts" / "predict_live.py"),
+        "--model", str(latest_model),
+        "--data", str(live_data_csv),
+        "--threshold", "0.7"
+    ]
+    
+    if not run_command(predict_cmd, "Errore durante la predizione live"):
+        logger.error("Job notturno interrotto nella fase di predizione.")
+        sys.exit(1)
+
+    logger.info("=" * 60)
+    logger.info("✅ JOB NOTTURNO COMPLETATO CON SUCCESSO!")
+    logger.info("=" * 60)
+
+if __name__ == "__main__":
+    main()

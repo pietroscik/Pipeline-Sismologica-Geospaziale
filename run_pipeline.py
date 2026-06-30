@@ -268,6 +268,23 @@ Esempi di uso:
     parser.add_argument("--skip-phase3", action="store_true", help="Salta Fase 3")
     parser.add_argument("--skip-phase4", action="store_true", help="Salta Fase 4")
 
+    # Opzioni per download (Fase 1)
+    parser.add_argument(
+        "--run-download",
+        action="store_true",
+        help="Esegui Fase 1 (Download MiniSEED). Richiede --download-start e --download-end."
+    )
+    parser.add_argument(
+        "--download-start",
+        type=str,
+        help="Data inizio download (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--download-end",
+        type=str,
+        help="Data fine download (YYYY-MM-DD)"
+    )
+
     # === NOVITÀ: Opzioni per analisi mobile e allarmi ===
     parser.add_argument(
         "--mobile-analysis",
@@ -288,9 +305,9 @@ Esempi di uso:
     )
     parser.add_argument(
         "--mobile-model-type",
-        choices=["xgboost", "random_forest"],
-        default="xgboost",
-        help="Tipo di modello ML per analisi mobile (default: xgboost)"
+        choices=["compare", "xgboost", "random_forest", "transformer"],
+        default="compare",
+        help="Tipo di modello ML per analisi mobile (default: compare)"
     )
     parser.add_argument(
         "--mobile-generate-alerts",
@@ -403,22 +420,25 @@ Esempi di uso:
 
         # FASE 1: Download
         if args.start_phase <= 1 and not args.skip_phase1:
-            logger.info("[Fase 1] Download forme d'onda...")
-            if not selected_stations_txt.exists():
-                logger.warning("Attenzione: Nessun file stazioni selezionate. Fase 1 saltata.")
+            if args.run_download:
+                logger.info("[Fase 1] Download forme d'onda...")
+                if not args.download_start or not args.download_end:
+                    raise ValueError("Per eseguire il download (Fase 1), specificare --download-start e --download-end.")
+                
+                cmd_download = [
+                    python_exe,
+                    scripts_dir / "download_cf_waveforms.py",
+                    "--start", f"{args.download_start}T00:00:00",
+                    "--end", f"{args.download_end}T23:59:59",
+                    "--output-dir", str(run_dir / "waveforms")
+                ]
+                if selected_stations_txt.exists():
+                    cmd_download.extend(["--stations-file", str(selected_stations_txt)])
+                
+                run_cmd(cmd_download, timeout=args.timeout * 4) # Download can be long
+                logger.info("Fase 1 completata.")
             else:
-                run_cmd(
-                    [
-                        python_exe,
-                        scripts_dir / "download_cf_waveforms.py",
-                        "--stations-file",
-                        str(selected_stations_txt),
-                        "--dry-run",
-                    ],
-                    optional=True,
-                    timeout=args.timeout
-                )
-                logger.info("Fase 1 completata (dry-run).")
+                logger.info("[Fase 1] Saltata. Per scaricare le tracce, usare l'opzione --run-download.")
 
         # FASE 2: Elaborazione Delta
         if args.start_phase <= 2 and not args.skip_phase2:
