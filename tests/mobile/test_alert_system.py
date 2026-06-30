@@ -63,10 +63,7 @@ webhook_enabled: false
         """Test loading environment-specific config files."""
         # Create test config files
         dev_config = tmp_path / "alert_config.dev.yaml"
-        dev_config.write_text("email_enabled: true
-webhook_enabled: false
-")
-        
+        dev_config.write_text("email_enabled: true")      
         prod_config = tmp_path / "alert_config.prod.yaml"
         prod_config.write_text("email_enabled: false
 webhook_enabled: true

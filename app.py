@@ -34,6 +34,11 @@ with st.sidebar:
         ["File locali", "Carica nuovi file"],
         help="Scegli se usare file già presenti nella cartella data/raw/ o caricarne di nuovi"
     )
+    # Inizializza variabili file per evitare NameError
+    events_csv = ""
+    picks_csv = ""
+    stations_csv = str(EXAMPLE_LEGACY_DIR / "stations.csv")
+    delta_csv = str(EXAMPLE_LEGACY_DIR / "scoperte_automatiche.csv.gz")
     
     if use_existing_files == "File locali":
         events_csv = st.text_input("Percorso Events CSV", value="", help="Se non hai un catalogo eventi/picks, puoi usare direttamente il delta di esempio.")
@@ -94,7 +99,7 @@ with st.sidebar:
     run_download = st.checkbox("Scarica Tracce (MiniSEED)", value=False, help="Scarica le forme d'onda dal server FDSN per le stazioni selezionate.")
     if run_download:
         st.warning("⚠️ Il download di lunghi periodi richiede svariati GB. Seleziona una finestra temporale breve (es. pochi giorni).")
-        dl_start = st.date_input("Data Inizio", value=pd.to_datetime("today") - pd.Timedelta(days=3))
+        dl_start = st.date_input("Data Inizio", value=pd.to_datetime("today") - pd.Timedelta(3, unit="D"))
         dl_end = st.date_input("Data Fine", value=pd.to_datetime("today"))
 
     st.subheader("⚙️ Controllo Fasi Pipeline")
@@ -176,6 +181,7 @@ with st.sidebar:
     
     spatial_csv = PROJECT_ROOT / "runs" / run_name / "processed" / "deltas_spatial.csv"
     delta_range = None
+    search_station = None
     if spatial_csv.exists():
         st.markdown("---")
         st.header("🗺️ Filtri Mappa")
@@ -189,6 +195,13 @@ with st.sidebar:
                     min_d, max_d = min_d - 1.0, max_d + 1.0
                 delta_range = st.slider("Filtra per Delta (secondi)", min_value=min_d, max_value=max_d, value=(min_d, max_d))
         search_station = st.text_input("🔍 Cerca Stazione (es. CAAM)", help="Filtra per nome della stazione")
+
+
+# Navigazione
+col_nav1, col_nav2 = st.columns([1, 4])
+with col_nav1:
+    if st.button("🚨 Dashboard Allarmi"):
+        st.switch_page("pages/alerts_dashboard.py")
 
 # LOGICA DI ESECUZIONE
 if run_button:
@@ -236,6 +249,7 @@ if run_button:
         with st.spinner("Fase 0: Estrazione stazioni nell'area selezionata..."):
             cmd_fase0 = [
                 sys.executable, str(PROJECT_ROOT / "scripts" / "select_stations_spatial.py"),
+                "--input-csv", stations_csv,
                 "--point", str(lat), str(lon), str(radius),
                 "--output-file", str(PROJECT_ROOT / "runs" / run_name / "selected_stations.txt")
             ]
@@ -318,7 +332,7 @@ if spatial_csv.exists():
                 (df_spatial["delta_seconds"] <= delta_range[1])
             ]
             
-        if search_station:
+        if search_station and df_spatial is not None:
             df_spatial = df_spatial[df_spatial["station"].str.contains(search_station.upper(), na=False)]
             
         center_lat = df_spatial["latitude"].mean() if not df_spatial.empty else 40.82

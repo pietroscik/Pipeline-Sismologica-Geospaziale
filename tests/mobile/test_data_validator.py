@@ -26,7 +26,8 @@ from mobile.data_validator import (
     calculate_mean_distance,
     calculate_bearing,
     calculate_mean_direction,
-    DataValidationError
+    DataValidationError,
+    validate_data
 )
 
 
@@ -74,8 +75,7 @@ class TestCSVValidation:
     def test_validate_csv_file_invalid_format(self, tmp_path):
         """Test loading invalid CSV file."""
         csv_path = tmp_path / "invalid.csv"
-        csv_path.write_text("not,a,valid,csv
-file")
+        csv_path.write_text("not,a,valid,csv")
         with pytest.raises(DataValidationError):
             validate_csv_file(csv_path)
 

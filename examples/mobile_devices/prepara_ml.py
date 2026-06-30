@@ -273,13 +273,12 @@ def add_statistical_features(df_orario: pd.DataFrame) -> pd.DataFrame:
         df_orario[f'energia_p{percentile}_24h'] = df_orario['energia_max'].rolling(24).quantile(percentile/100)
     
     # 2. Skewness e Kurtosis
-    df_orario['skewness_eventi_24h'] = df_orario['numero_eventi'].rolling(24).skew()
-    df_orario['kurtosis_eventi_24h'] = df_orario['numero_eventi'].rolling(24).kurtosis()
+    df_orario['skewness_eventi_24h'] = df_orario['numero_eventi'].rolling(24, min_periods=1).apply(lambda x: pd.Series(x).skew(), raw=True)
+    df_orario['kurtosis_eventi_24h'] = df_orario['numero_eventi'].rolling(24, min_periods=1).apply(lambda x: pd.Series(x).kurtosis(), raw=True)
     
     # 3. Entropia
     df_orario['entropy_24h'] = df_orario['numero_eventi'].rolling(24).apply(
-        lambda x: -np.sum((x/x.sum()) * np.log2(x/x.sum() + 1e-10)) if x.sum() > 0 else 0, raw=False
-    )
+        lambda x: -np.sum((x/x.sum()) * np.log2(x/x.sum() + 1e-10)) if x.sum() > 0 else 0, raw=False )
     
     # 4. Autocorrelazione
     df_orario['autocorr_1h'] = df_orario['numero_eventi'].autocorr(1)
@@ -386,8 +385,7 @@ def main():
         df_ml.to_csv(FILE_OUT, index=True, index_label='Tempo')
         
         tempo_elaborazione = time.time() - tempo_inizio
-        print(f"
-📊 === SINTESI DATASET MACHINE LEARNING ===")
+        print(f"📊 === SINTESI DATASET MACHINE LEARNING ===")
         print("-" * 60)
         print(f"Righe totali (Ore campionate): {len(df_ml)}")
         print(f"Ore con Allarme (Target=1): {df_ml['Target_Allarme'].sum()}")
@@ -395,13 +393,11 @@ def main():
         print(f"Feature totali: {len(df_ml.columns) - 1}")
         print(f"Valori mancanti: {missing_pct:.1f}%")
         print("-" * 60)
-        print(f"
-✅ Dataset addestramento avanzato salvato: '{FILE_OUT}'")
+        print(f"✅ Dataset addestramento avanzato salvato: '{FILE_OUT}'")
         print(f"⏱️ Tempo impiegato: {tempo_elaborazione:.2f}s")
         
         # Mostra prime righe
-        print("
-📋 Anteprima dataset:")
+        print("📋 Anteprima dataset:")
         print(df_ml.head().T)
         
     except DataValidationError as e:

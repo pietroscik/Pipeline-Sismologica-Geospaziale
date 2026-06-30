@@ -56,7 +56,11 @@ def parse_arguments(fdsn_cfg: dict) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Scarica waveform MiniSEED via FDSN per un elenco di stazioni.",
     )
-    parser.add_argument("--network", default=fdsn_cfg.get("network", "IV"), help="Codice network FDSN.")
+    parser.add_argument(
+        "--config", type=str,
+        help="File YAML con configurazione (sovrascrive i parametri CLI)."
+    )
+    parser.add_argument("--network", "--networks", default=fdsn_cfg.get("network", "IV"), help="Codice network FDSN.")
     parser.add_argument(
         "--stations",
         nargs="*",

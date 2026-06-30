@@ -4,6 +4,7 @@ import time
 import logging
 import joblib
 import json
+from imblearn.over_sampling import SMOTE
 from pathlib import Path
 from typing import Tuple, Dict, Optional, Any
 from datetime import datetime
@@ -94,7 +95,6 @@ def load_data(dataset_path: str = "dataset_ml_sismico.csv") -> pd.DataFrame:
         logger.warning(f"Dataset molto piccolo ({len(df)} record), risultati potrebbero non essere affidabili")
     
     return df
-
 
 def split_data_temporal(df: pd.DataFrame, test_size: float = 0.2, random_state: int = 42) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -216,13 +216,25 @@ def prepare_features(
     
     return X, y
 
+def apply_smote(X: pd.DataFrame, y: pd.Series) -> Tuple[pd.DataFrame, pd.Series]:
+    """Applica SMOTE per bilanciare le classi."""
+    logger.info("⚖️ Applicazione SMOTE per bilanciamento classi...")
+    # Gestione NaN prima di SMOTE
+    X = X.fillna(0)
+    
+    sm = SMOTE(random_state=42)
+    X_res, y_res = sm.fit_resample(X, y)
+    
+    logger.info(f"   Originali: {len(X)}, Bilanciati: {len(X_res)}")
+    return X_res, y_res
+
 
 def train_xgboost(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     X_test: pd.DataFrame = None,
     y_test: pd.Series = None,
-    early_stopping_rounds: int = 10,
+    early_stopping_rounds: int = args.early_stopping,
     eval_metric: str = "aucpr",
     class_weight: str = "balanced",
     random_state: int = 42
@@ -943,7 +955,6 @@ def save_model(
         logger.info(f"✅ Metadati salvati in: {meta_path}")
         
     return model_path
-
 if __name__ == "__main__":
     import argparse
     
