@@ -1,0 +1,26 @@
+retraining:
+  enabled: true
+  schedule: "weekly"
+  interval_seconds: 604800      # 1 settimana
+  min_new_samples: 1000         # Minimo nuovi dati
+  performance_threshold: 0.85   # Soglia R²
+  models_to_retrain:            # Modelli da retrainare
+    - xgboost
+    - random_forest
+  cross_validation_folds: 5
+  test_size: 0.2
+
+data:
+  input_dir: examples/mobile_devices
+  input_file: scoperte_automatiche.csv.gz
+  min_samples: 1000
+
+notification:
+  enabled: true
+  channels: ["console", "file", "slack"]
+  success: true
+  failure: true
+
+logging:
+  level: INFO
+  file: logs/retraining.log

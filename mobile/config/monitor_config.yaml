@@ -1,0 +1,93 @@
+# Configurazione Monitoraggio Real-Time Campi Flegrei
+# Issue #4 - FASE 5.1
+
+# ============================================
+# IMPOSTAZIONI GENERALI
+# ============================================
+monitor:
+  name: "CampiFlegrei_RealTime_Monitor"
+  description: "Monitoraggio continuo area Campi Flegrei"
+  
+# ============================================
+# AREA DI MONITORAGGIO
+# ============================================
+area:
+  latitude: 40.8062          # Latitudine centro Campi Flegrei
+  longitude: 14.1410         # Longitudine centro Campi Flegrei
+  radius_km: 20.0           # Raggio area di monitoraggio
+  network: "IV"             # Rete sismica (INGV)
+  
+# ============================================
+# INTERVALLO DI MONITORAGGIO
+# ============================================
+timing:
+  interval_minutes: 10      # Intervallo tra cicli (minuti)
+  lookback_minutes: 15     # Minuti di dati da scaricare
+  timeout_seconds: 30      # Timeout per ogni operazione FDSN
+  
+# ============================================
+# SOGLIE DI ALERT
+# ============================================
+thresholds:
+  min_stations: 18         # Minimo stazioni richieste
+  risk_threshold: 0.7     # Soglia rischio (0-1)
+  high_risk_threshold: 0.9  # Soglia per allarme HIGH
+  
+# ============================================
+# MODELLO ML
+# ============================================
+ml_model:
+  enabled: true             # Abilita predizione con ML
+  model_path: "mobile/models/campi_flegrei_risk_model.pkl"
+  fallback_enabled: true   # Usa logica di fallback se modello non esiste
+  
+  # Feature da usare per la predizione
+  features: 
+    - "mean"
+    - "std" 
+    - "min"
+    - "max"
+    - "amplitude_range"
+    - "hour"
+    - "minute"
+    
+# ============================================
+# OUTPUT
+# ============================================
+output:
+  results_dir: "runs/monitor"
+  save_csv: true
+  save_json: true
+  log_level: "INFO"
+  
+# ============================================
+# ALERT SYSTEM (override)
+# ============================================
+# Puoi overrideare qui le configurazioni di alert
+# o usare quelle da mobile/config/alert_config.{ENVIRONMENT}.yaml
+alert:
+  enabled: true
+  cooldown_minutes: 60      # Evita allarmi ripetuti per lo stesso evento
+  repeat_interval_hours: 24  # Intervallo minimo tra allarmi per lo stesso evento
+
+# ============================================
+# ESECUZIONE
+# ============================================
+execution:
+  dry_run: false            # Modalita test (nessun allarme invio)
+  daemon: false             # Modalita daemon (auto-restart su errore)
+  max_retries: 3            # Massimi tentativi prima di arendersi
+  retry_delay_seconds: 60  # Attesa tra tentativi
+
+# ============================================
+# STAZIONI DI DEFAULT (fallback)
+# ============================================
+stations:
+  default: [
+    "CAAM", "CAFL", "CAWE", "CBAC", "CBAG", "CCAP", "CFMN", "CMIS",
+    "CMSN", "CMTS", "CNIS", "COLB", "CPIS", "CPOZ", "CQUE", "CSFT",
+    "CSOB", "CSTH", "CUMA", "IBCM", "IBRN", "IOCA", "IPSM", "PTMR"
+  ]
+  required: [
+    "CAAM", "CAFL", "CBAC", "CMIS", "CMSN", "CPIS", "CPOZ", "CSFT"
+  ]

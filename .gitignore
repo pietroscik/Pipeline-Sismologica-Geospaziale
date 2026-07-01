@@ -1,6 +1,6 @@
 # Ambienti virtuali Python
 venv/
-env/
+.env/
 .venv/
 
 # File temporanei e cache di Python
@@ -31,3 +31,7 @@ Thumbs.db
 
 # Streamlit
 .streamlit/
+runs/
+*.pkl
+*.csv.gz
+output_*.geojson
