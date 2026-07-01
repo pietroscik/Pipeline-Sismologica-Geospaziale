@@ -34,19 +34,30 @@ Environment Variables:
 
 """
 
+from __future__ import annotations
+
+import base64
+import hashlib
 import json
 import logging
 import os
 import smtplib
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Tuple
-import base64
-import hashlib
-import yaml
-import os
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import requests
+import yaml
+from cryptography.fernet import Fernet
 
 from scripts.utils import setup_logger  # noqa: E402
+
+try:
+    from twilio.rest import Client
+except ImportError:
+    Client = None
 
 logger = setup_logger("alert_system")
 
@@ -75,6 +86,7 @@ ENV_DEFAULTS = {
     },
 }
 
+
 def _derive_fernet_key(raw_key: str) -> bytes:
     """
     Normalize an encryption key to a valid Fernet key:
@@ -90,6 +102,7 @@ def _derive_fernet_key(raw_key: str) -> bytes:
     except Exception:
         digest = hashlib.sha256(kb).digest()
         return base64.urlsafe_b64encode(digest)
+
 
 class AlertSystem:
     """
@@ -158,7 +171,7 @@ class AlertSystem:
 
     # Default alert level thresholds
 
-    DEFAULT_THRESHOLDS = {"LOW": 0.5, "MEDIUM": 0.7, "HIGH": 0.9, "CRITICAL": 0.95}
+    DEFAULT_THRESHOLDS = {"LOW": 0.0, "MEDIUM": 0.6, "HIGH": 0.8, "CRITICAL": 0.95}
 
     # Alert level colors for webhook embeds
 
@@ -197,101 +210,55 @@ class AlertSystem:
         - otherwise environment/default loading is used
         """
         # determine environment early for config file resolution/tests
-        self.environment: str = env or os.environ.get("ENV", "development")
+        self.environment: str = (
+            env
+            or os.environ.get("ENVIRONMENT")
+            or os.environ.get("ENV")
+            or "development"
+        )
 
         loaded_cfg: Dict[str, Any] = {}
         if config is not None:
-            loaded_cfg = config
+            loaded_cfg = config or {}
+        elif config_path:
+            try:
+                loaded_cfg = self._load_yaml_config(config_path) or {}
+            except Exception:
+                loaded_cfg = {}
         else:
-            if config_path:
-                try:
-                    # load explicit config file
-                    loaded_cfg = self._load_yaml_config(config_path)
-                except Exception:
-                    loaded_cfg = {}
+            specific_config_file = PROJECT_ROOT / "mobile" / "config" / f"alert_config.{self.environment}.yaml"
+            default_config_file = PROJECT_ROOT / "mobile" / "config" / "alert_config.yaml"
+            if specific_config_file.exists():
+                loaded_cfg = self._load_yaml_config(str(specific_config_file)) or {}
+            elif default_config_file.exists():
+                loaded_cfg = self._load_yaml_config(str(default_config_file)) or {}
             else:
-                # try load environment-specific YAML, otherwise fallback to ENV_DEFAULTS
-                try:
-                    default_config_path = PROJECT_ROOT / "mobile" / f"alert_config.{self.environment}.yaml"
-                    if default_config_path.exists():
-                        loaded_cfg = self._load_yaml_config(str(default_config_path))
-                    else:
-                        loaded_cfg = ENV_DEFAULTS.get(self.environment, {})
-                except Exception:
-                    loaded_cfg = {}
+                loaded_cfg = ENV_DEFAULTS.get(self.environment, {}).copy()
 
-        # sensible defaults and ensure expected keys exist
-        # base defaults come from environment presets when available
         env_defaults = ENV_DEFAULTS.get(self.environment, {})
         base_defaults: Dict[str, Any] = {
             "email_enabled": False,
             "sms_enabled": False,
             "webhook_enabled": False,
+            "telegram_enabled": False,
             "email_from": "",
             "email_smtp": {},
             "webhook_url": "",
             "encryption_key": None,
         }
-        # merge: env_defaults <- base_defaults <- loaded_cfg (loaded_cfg has highest precedence)
-        merged = {**base_defaults, **env_defaults}
-        self.config: Dict[str, Any] = {**merged, **(loaded_cfg or {})}
-        self.encryption_key: Optional[str] = self.config.get("encryption_key")
-
-        # Load configuration in priority order
-
-        if config_path is not None:
-
-            yaml_config = self._load_yaml_config(config_path)
-
-            self.config.update(yaml_config)
-
-        else:
-
-            # Try to load environment-specific config first
-
-            env_config_path = (
-                PROJECT_ROOT
-                / "mobile"
-                / "config"
-                / f"alert_config.{self.environment}.yaml"
-            )
-
-            if env_config_path.exists():
-
-                env_config = self._load_yaml_config(str(env_config_path))
-
-                self.config.update(env_config)
-
-            else:
-
-                # Fall back to default config
-
-                default_config_path = (
-                    PROJECT_ROOT / "mobile" / "config" / "alert_config.yaml"
-                )
-
-                if default_config_path.exists():
-
-                    default_config = self._load_yaml_config(str(default_config_path))
-
-                    self.config.update(default_config)
-
-        # Load environment variables (highest priority)
+        merged = {**base_defaults, **env_defaults, **(loaded_cfg or {})}
+        self.config: Dict[str, Any] = merged
 
         env_config = self._load_env_config()
-
         self.config.update(env_config)
 
-        # Apply direct config (highest priority after env vars)
-
         if config is not None:
-
             self.config.update(config)
 
-        # Decrypt encrypted values if encryption key is available
-
+        self.encryption_key = (
+            self.config.get("encryption_key") or os.getenv("ENCRYPTION_KEY")
+        )
         if self.encryption_key:
-
             self._decrypt_config_values()
 
         self.alerts_log: List[Dict] = []
@@ -488,51 +455,24 @@ class AlertSystem:
 
     def _decrypt_config_values(self):
         """Decrypt encrypted values in configuration if encryption key is available."""
-
         try:
+            key = _derive_fernet_key(self.encryption_key)
+            fernet = Fernet(key)
 
-            from cryptography.fernet import Fernet
-
-            fernet = Fernet(self.encryption_key.encode())
-
-            # List of potentially encrypted keys
-
-            encrypted_keys = [
-                "email_password",
-                "sms_auth_token",
-                "sms_account_sid",
-                "webhook_url",
-                "email_user",
-            ]
-
-            for key in encrypted_keys:
-
-                if key in self.config and isinstance(self.config[key], str):
-
-                    if self.config[key].startswith("ENC:"):
-
-                        try:
-
-                            decrypted = fernet.decrypt(
-                                self.config[key][4:].encode()
-                            ).decode()
-
-                            self.config[key] = decrypted
-
-                            logger.info(f"Decrypted configuration key: {key}")
-
-                        except Exception as e:
-
-                            logger.warning(f"Failed to decrypt {key}: {e}")
+            for config_key, value in list(self.config.items()):
+                if isinstance(value, str) and value.startswith("ENC:"):
+                    try:
+                        decrypted = fernet.decrypt(value[4:].encode()).decode()
+                        self.config[config_key] = decrypted
+                        logger.info(f"Decrypted configuration key: {config_key}")
+                    except Exception as e:
+                        logger.warning(f"Failed to decrypt {config_key}: {e}")
 
         except ImportError:
-
             logger.warning(
                 "Cryptography library not installed. Install with: pip install cryptography"
             )
-
         except Exception as e:
-
             logger.warning(f"Decryption failed: {e}")
 
     def _encrypt_value(self, value: str) -> str:
@@ -542,7 +482,7 @@ class AlertSystem:
             key = _derive_fernet_key(self.encryption_key)
             fernet = Fernet(key)
             token = fernet.encrypt(value.encode())
-            return token.decode()
+            return f"ENC:{token.decode()}"
         except Exception as e:
             logger.warning(f"Encryption failed: {e}")
             raise ValueError(f"Encryption failed: {e}")
@@ -576,20 +516,81 @@ class AlertSystem:
         """
 
         errors: list[str] = []
-        # ensure at least one notification channel enabled
+
         if not any(
             (
                 self.config.get("email_enabled"),
                 self.config.get("sms_enabled"),
                 self.config.get("webhook_enabled"),
+                self.config.get("telegram_enabled"),
             )
         ):
-            errors.append("No notification channel enabled (email/sms/webhook).")
-        # existing validation checks...
-        # ...existing code that appends other errors...
+            errors.append(
+                "At least one notification channel must be enabled (email/sms/webhook/telegram)."
+            )
+
+        if self.config.get("email_enabled"):
+            smtp_cfg = self.config.get("email_smtp", {})
+            if isinstance(smtp_cfg, dict):
+                smtp_server = smtp_cfg.get("host") or smtp_cfg.get("server") or os.getenv("SMTP_SERVER", "smtp.gmail.com")
+                smtp_port = smtp_cfg.get("port") or self.config.get("email_port") or int(os.getenv("SMTP_PORT", 587))
+            else:
+                smtp_server = smtp_cfg or os.getenv("SMTP_SERVER", "smtp.gmail.com")
+                smtp_port = self.config.get("email_port", int(os.getenv("SMTP_PORT", 587)))
+
+            try:
+                smtp_port = int(smtp_port)
+            except (TypeError, ValueError):
+                smtp_port = int(os.getenv("SMTP_PORT", 587))
+
+            email_user = (
+                self.config.get("email_user")
+                or (smtp_cfg.get("user") if isinstance(smtp_cfg, dict) else None)
+                or os.getenv("SMTP_USERNAME", "")
+            )
+            email_password = (
+                self.config.get("email_password")
+                or (smtp_cfg.get("password") if isinstance(smtp_cfg, dict) else None)
+                or os.getenv("SMTP_PASSWORD", "")
+            )
+            email_from = self.config.get("email_from") or os.getenv("SMTP_FROM_ADDR", email_user)
+
+            missing = []
+            if not email_user:
+                missing.append("email_user")
+            if not email_password:
+                missing.append("email_password")
+            if not email_from:
+                missing.append("email_from")
+
+            if missing:
+                errors.append(
+                    f"Email enabled but missing configuration: {', '.join(missing)}.")
+        if self.config.get("webhook_enabled"):
+            if not self.config.get("webhook_url"):
+                errors.append("Webhook enabled but webhook_url not configured.")
+
+        if self.config.get("sms_enabled"):
+            missing = [
+                key
+                for key in (
+                    "sms_account_sid",
+                    "sms_auth_token",
+                    "sms_from",
+                    "sms_to",
+                )
+                if not self.config.get(key)
+            ]
+            if missing:
+                errors.append(
+                    f"SMS enabled but missing configuration: {', '.join(missing)}."
+                )
+
         is_valid = len(errors) == 0
         if not is_valid:
-            logger.warning(f"Configuration validation failed with {len(errors)} error(s)")
+            logger.warning(
+                f"Configuration validation failed with {len(errors)} error(s)"
+            )
         return is_valid, errors
 
     def _init_channels(self):
@@ -772,11 +773,12 @@ class AlertSystem:
 
     def _get_alert_level(self, score: float) -> str:
         """Return alert level label based on score"""
-        if score >= 0.95:
+        thresholds = self.LEVEL_THRESHOLDS
+        if score >= thresholds.get("CRITICAL", 0.95):
             return "CRITICAL"
-        if score >= 0.85:
+        if score >= thresholds.get("HIGH", 0.9):
             return "HIGH"
-        if score >= 0.7:
+        if score >= thresholds.get("MEDIUM", 0.7):
             return "MEDIUM"
         return "LOW"
 
@@ -945,58 +947,44 @@ class AlertSystem:
 
     def _send_sms(self, alert: Dict) -> None:
 
+        if Client is None:
+            logger.warning(
+                "Twilio not installed, cannot send SMS. Install with: pip install twilio"
+            )
+            return
+
         try:
-
-            from twilio.rest import Client
-
             account_sid = self.config.get(
                 "sms_account_sid", os.getenv("TWILIO_ACCOUNT_SID", "")
             )
-
             auth_token = self.config.get(
                 "sms_auth_token", os.getenv("TWILIO_AUTH_TOKEN", "")
             )
-
             from_number = self.config.get(
                 "sms_from", os.getenv("TWILIO_PHONE_NUMBER", "")
             )
-
             to_numbers = self.config.get("sms_to", [])
 
             if not to_numbers:
-
                 sms_to_env = os.getenv("SMS_TO_NUMBERS", "")
-
                 if sms_to_env:
-
                     to_numbers = [num.strip() for num in sms_to_env.split(",")]
 
             if not all([account_sid, auth_token, from_number, to_numbers]):
-
                 logger.warning("SMS configuration incomplete, skipping SMS alert")
-
                 return
 
             client = Client(account_sid, auth_token)
-
             message_body = f"Alert: {alert['level']} - Risk: {alert['risk_index']:.2f}"
 
             for to_number in to_numbers:
-
                 client.messages.create(
                     body=message_body, from_=from_number, to=to_number
                 )
 
             logger.info(f"SMS alert sent to {to_numbers}")
 
-        except ImportError:
-
-            logger.warning(
-                "Twilio not installed, cannot send SMS. Install with: pip install twilio"
-            )
-
         except Exception as e:
-
             logger.error(f"Failed to send SMS alert: {e}")
 
     def _send_telegram(self, alert: Dict) -> None:

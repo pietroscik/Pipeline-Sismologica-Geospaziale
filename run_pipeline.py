@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import shutil
 import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -16,7 +16,7 @@ if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
     print("Pipeline Analisi Dati Sismici Geospaziale - run_pipeline help\n")
     print("Use --help for full options.")
     sys.exit(0)
-    
+
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -326,7 +326,6 @@ def setup_run_directory(run_dir: Path) -> tuple:
         Tuple di (data_interim_dir, data_processed_dir, maps_dir)
 
     """
-    
 
     data_interim_dir = run_dir / "interim"
 
@@ -1077,6 +1076,7 @@ Esempi di uso:
         raise
 
     # pandas imported at module level
+
 
 if __name__ == "__main__":
     try:
