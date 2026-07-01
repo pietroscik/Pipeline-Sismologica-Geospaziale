@@ -7,7 +7,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-
 from utils import load_csv_with_checks, setup_logger
 
 logger = setup_logger("compute_stats")
@@ -94,18 +93,26 @@ def main() -> None:
             if line.strip() and not line.lstrip().startswith("#")
         }
         if allowed_stations:
-            base_df = base_df[base_df["station"].astype(str).str.upper().isin(allowed_stations)]
+            base_df = base_df[
+                base_df["station"].astype(str).str.upper().isin(allowed_stations)
+            ]
             if base_df.empty:
-                raise SystemExit("Filtrando per stazioni non resta alcuna osservazione nel CSV base.")
+                raise SystemExit(
+                    "Filtrando per stazioni non resta alcuna osservazione nel CSV base."
+                )
 
     base_stats = summarize(base_df, "base")
 
     if args.soft_csv:
         soft_df = load_delta_csv(args.soft_csv, args.channel)
         if args.stations_file and not soft_df.empty:
-            soft_df = soft_df[soft_df["station"].astype(str).str.upper().isin(allowed_stations)]
+            soft_df = soft_df[
+                soft_df["station"].astype(str).str.upper().isin(allowed_stations)
+            ]
             if soft_df.empty:
-                raise SystemExit("Filtrando per stazioni non resta alcuna osservazione nel CSV soft.")
+                raise SystemExit(
+                    "Filtrando per stazioni non resta alcuna osservazione nel CSV soft."
+                )
         soft_stats = summarize(soft_df, "soft")
         stats = base_stats.merge(soft_stats, on="station", how="outer")
         stats["soft_minus_base_mean"] = stats["soft_mean"] - stats["base_mean"]

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] - 2026-07-01
+
+### Fixed
+- Fixed `scripts/download_cf_waveforms.py` FDSN client discovery logic and URL normalization.
+- Added support for `--clients` fallback list and ensured `--client`/config precedence is handled correctly.
+- Defaulted `--block-days` to `1` to avoid large single requests rejected by INGV FDSN (`413`).
+- Sanitized Windows filenames for wildcard channels such as `HN?` when writing MiniSEED output.
+- Fixed syntax issues in `mobile/api/crud.py` and `scripts/analyze_trace.py` that prevented formatting with Black.
+- Updated README and linting docs to exclude `venv` from `flake8` and document the correct FDSN download usage.
+
+---
+
 ## [0.1.0] - 2026-05-29
 
 ### Added

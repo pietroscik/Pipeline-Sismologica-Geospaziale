@@ -413,18 +413,25 @@ Interroga i server FDSN per scaricare massivamente le forme d'onda in formato Mi
 python scripts/download_cf_waveforms.py \
   --config config.yaml \
   --output-dir runs/demo/waveforms \
-  --dry-run  # Modalita test: non scarica, solo mostra cosa verrebbe scaricato
+  --dry-run  # Modalità test: non scarica, solo mostra cosa verrebbe scaricato
 
 # Scarica con parametri CLI
 python scripts/download_cf_waveforms.py \
   --client INGV \
   --networks IV MN \
   --stations AQV BKE \
-  --channels HHZ HHN HHE \
-  --start-date 2024-01-01 \
-  --end-date 2024-01-02 \
+  --channels HN? \
+  --start 2024-01-01 \
+  --end 2024-01-02 \
+  --block-days 1 \
   --output-dir runs/demo/waveforms
 ```
+
+**Note importanti**
+- `--client` può essere un alias FDSN come `INGV`, `IRIS`, `GEOFON`, `RASPISHAKE`
+- `--clients` può ricevere più nodi in fallback
+- `--block-days` suddivide la richiesta in finestre temporali più piccole per evitare errori `413`
+- su Windows i nomi dei file vengono sanitizzati automaticamente quando il canale contiene caratteri speciali come `?`
 
 **Script:** `scripts/analyze_trace.py`
 
@@ -1258,47 +1265,30 @@ jobs:
 
 ### Standard di Codice
 
-Il progetto utilizza i seguenti standard:
-
 #### Formattazione
 - **Black**: Line length = 88 caratteri
 - **Isort**: Ordinamento import automatico
+- **Flake8**: Controllo errori di sintassi e stile
 
 ```bash
 # Formattazione automatica di tutto il progetto
 black .
 isort .
 
-# Formattazione di un file specifico
-black scripts/analyze_delta_map.py
+# Controllo sintassi rapido
+flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude venv
 ```
 
-#### Linting
-- **Flake8**: Controllo errori di sintassi e stile
-
+oppure, se flake8 legge `pyproject.toml`:
 ```bash
 flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 ```
 
-#### Type Checking (Opzionale)
-- **mypy**: Controllo tipi statico
-
-```bash
-mypy . --ignore-missing-imports
-```
-
 #### Pre-commit Hooks
 
-Configura i ganci Git per l'esecuzione automatica:
-
 ```bash
-# Installa pre-commit
 pip install pre-commit
-
-# Installa i ganci
 pre-commit install
-
-# Esegui manualmente su tutti i file
 pre-commit run --all-files
 ```
 

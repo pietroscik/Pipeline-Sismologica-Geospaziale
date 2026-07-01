@@ -1,39 +1,1 @@
-import pandas as pd
-import joblib
-import argparse
-import os
-import xgboost as xgb
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--input-csv", required=True)
-parser.add_argument("--model-path", required=True)
-parser.add_argument("--output-dir", required=True)
-args = parser.parse_args()
-
-print("🚀 Caricamento modello e dataset...")
-model = joblib.load(args.model_path)
-df = pd.read_csv(args.input_csv)
-
-# Seleziona solo le colonne numeriche e riempie i NaN
-features = df.select_dtypes(include=['number']).fillna(0)
-
-# RIMUOVE LA COLONNA TARGET (il modello deve predirla, non leggerla in input)
-if 'Target_Allarme' in features.columns:
-    features = features.drop(columns=['Target_Allarme'])
-
-# Allinea esattamente le feature a quelle attese dal modello per evitare mismatch
-if hasattr(model, 'feature_names') and model.feature_names is not None:
-    features = features[model.feature_names]
-
-print("🔍 Inferenza rischio sismico...")
-# Gestione sicura del tipo di modello XGBoost
-if hasattr(model, 'predict_proba'):
-    df['risk_score'] = model.predict_proba(features)[:, 1]
-else:
-    dmatrix = xgb.DMatrix(features)
-    df['risk_score'] = model.predict(dmatrix)
-
-os.makedirs(args.output_dir, exist_ok=True)
-out_path = os.path.join(args.output_dir, "risultati_inferenza.csv")
-df.to_csv(out_path, index=False)
-print(f"✅ Analisi completata! Risultati salvati in: {out_path}")
+import argparseimport osimport joblibimport pandas as pdimport xgboost as xgbparser = argparse.ArgumentParser()parser.add_argument("--input-csv", required=True)parser.add_argument("--model-path", required=True)parser.add_argument("--output-dir", required=True)args = parser.parse_args()print("🚀 Caricamento modello e dataset...")model = joblib.load(args.model_path)df = pd.read_csv(args.input_csv)# Seleziona solo le colonne numeriche e riempie i NaNfeatures = df.select_dtypes(include=["number"]).fillna(0)# RIMUOVE LA COLONNA TARGET (il modello deve predirla, non leggerla in input)if "Target_Allarme" in features.columns:    features = features.drop(columns=["Target_Allarme"])# Allinea esattamente le feature a quelle attese dal modello per evitare mismatchif hasattr(model, "feature_names") and model.feature_names is not None:    features = features[model.feature_names]print("🔍 Inferenza rischio sismico...")# Gestione sicura del tipo di modello XGBoostif hasattr(model, "predict_proba"):    df["risk_score"] = model.predict_proba(features)[:, 1]else:    dmatrix = xgb.DMatrix(features)    df["risk_score"] = model.predict(dmatrix)os.makedirs(args.output_dir, exist_ok=True)out_path = os.path.join(args.output_dir, "risultati_inferenza.csv")df.to_csv(out_path, index=False)print(f"✅ Analisi completata! Risultati salvati in: {out_path}")

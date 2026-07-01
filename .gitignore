@@ -7,6 +7,11 @@ venv/
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+*.tmp.driveupload/
+*.pytest_cache/
+htmlcov/
+
 
 # Cartelle Dati (non caricare mai dati sensibili o enormi su Git)
 data/raw/

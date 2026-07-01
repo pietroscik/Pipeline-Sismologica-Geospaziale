@@ -2,44 +2,24 @@
 
 from __future__ import annotations
 
-
-
 import argparse
-
 import json
-
 from pathlib import Path
-
-
+from typing import Optional
 
 import matplotlib.pyplot as plt
-
 import numpy as np
-
 import pandas as pd
-
 from obspy import read
-
 from obspy.core.trace import Trace
-
 from obspy.signal.trigger import classic_sta_lta
-
 from scipy.signal import welch
-
-
-
-from utils import setup_logger, get_project_root
-
-
+from utils import get_project_root, setup_logger
 
 logger = setup_logger("analyze_trace")
 
 
-
-
-
 def resolve_path(path: Optional[Path]) -> Optional[Path]:
-
     """Resolve a path against project root if it's relative."""
 
     if path is None:
@@ -51,9 +31,6 @@ def resolve_path(path: Optional[Path]) -> Optional[Path]:
         return get_project_root() / path
 
     return path
-
-
-
 
 
 def plot_waveform(trace: Trace, outdir: Path | None = None) -> None:
@@ -95,9 +72,6 @@ def plot_waveform(trace: Trace, outdir: Path | None = None) -> None:
     plt.close(fig)
 
 
-
-
-
 def plot_fft(trace: Trace, outdir: Path | None = None) -> None:
 
     sr = trace.stats.sampling_rate
@@ -111,8 +85,6 @@ def plot_fft(trace: Trace, outdir: Path | None = None) -> None:
     fft_freq, pxx = welch(trace.data.astype(float), fs=sr, nperseg=nperseg)
 
     amplitude = np.sqrt(pxx)
-
-
 
     fig, ax = plt.subplots(figsize=(10, 4))
 
@@ -143,10 +115,9 @@ def plot_fft(trace: Trace, outdir: Path | None = None) -> None:
     plt.close(fig)
 
 
-
-
-
-def plot_sta_lta(trace: Trace, sta: float, lta: float, outdir: Path | None = None) -> None:
+def plot_sta_lta(
+    trace: Trace, sta: float, lta: float, outdir: Path | None = None
+) -> None:
 
     sr = trace.stats.sampling_rate
 
@@ -159,8 +130,6 @@ def plot_sta_lta(trace: Trace, sta: float, lta: float, outdir: Path | None = Non
     times = trace.times()
 
     skip = max(1, trace.stats.npts // 500_000)
-
-
 
     fig, ax = plt.subplots(figsize=(10, 4))
 
@@ -191,9 +160,6 @@ def plot_sta_lta(trace: Trace, sta: float, lta: float, outdir: Path | None = Non
     plt.close(fig)
 
 
-
-
-
 def summarize_trace(trace: Trace, sta: float, lta: float) -> dict[str, float]:
 
     data = trace.data.astype(float)
@@ -216,8 +182,6 @@ def summarize_trace(trace: Trace, sta: float, lta: float) -> dict[str, float]:
 
     cft_peak_time = trace.stats.starttime.timestamp + cft_peak_idx / sr
 
-
-
     nperseg = min(trace.stats.npts, int(sr * 60))
 
     freqs, pxx = welch(data, fs=sr, nperseg=nperseg)
@@ -226,81 +190,79 @@ def summarize_trace(trace: Trace, sta: float, lta: float) -> dict[str, float]:
 
     peak_freq = freqs[peak_freq_idx] if freqs.size else 0.0
 
-
-
     summary = {
-
         "trace_id": trace.id,
-
         "start_time_iso": str(trace.stats.starttime),
-
         "end_time_iso": str(trace.stats.endtime),
-
         "duration_s": float(duration),
-
         "sampling_rate_hz": float(sr),
-
         "npts": int(trace.stats.npts),
-
         "amplitude_peak": float(data[peak_idx]),
-
         "amplitude_peak_time_epoch": float(peak_time),
-
-        "amplitude_rms": float(np.sqrt(np.mean(data ** 2))),
-
+        "amplitude_rms": float(np.sqrt(np.mean(data**2))),
         "amplitude_std": float(np.std(data)),
-
         "percentile_95": float(np.percentile(np.abs(data), 95)),
-
         "sta_lta_peak": float(cft[cft_peak_idx]) if cft.size else float("nan"),
-
         "sta_lta_peak_time_epoch": float(cft_peak_time),
-
         "sta_lta_mean": float(np.mean(cft)) if cft.size else float("nan"),
-
         "frequency_peak_hz": float(peak_freq),
-
     }
 
     return summary
 
 
-
-
-
 def main() -> None:
 
-    parser = argparse.ArgumentParser(description="Analizza una traccia MiniSEED (waveform, spettro, STA/LTA).")
+    parser = argparse.ArgumentParser(
+        description="Analizza una traccia MiniSEED (waveform, spettro, STA/LTA)."
+    )
 
     parser.add_argument("--file", type=Path, help="Percorso al file MiniSEED.")
 
-    parser.add_argument("--dir", type=Path, help="Cartella contenente file MiniSEED da analizzare in batch.")
+    parser.add_argument(
+        "--dir",
+        type=Path,
+        help="Cartella contenente file MiniSEED da analizzare in batch.",
+    )
 
-    parser.add_argument("--output-csv", type=Path, help="File CSV di output per le statistiche batch.")
+    parser.add_argument(
+        "--output-csv", type=Path, help="File CSV di output per le statistiche batch."
+    )
 
-    parser.add_argument("--component", help="Se il file contiene più tracce, specifica la component (es. 'HHZ').")
+    parser.add_argument(
+        "--component",
+        help="Se il file contiene più tracce, specifica la component (es. 'HHZ').",
+    )
 
-    parser.add_argument("--sta", type=float, default=1.0, help="Finestra STA in secondi.")
+    parser.add_argument(
+        "--sta", type=float, default=1.0, help="Finestra STA in secondi."
+    )
 
-    parser.add_argument("--lta", type=float, default=10.0, help="Finestra LTA in secondi.")
+    parser.add_argument(
+        "--lta", type=float, default=10.0, help="Finestra LTA in secondi."
+    )
 
     parser.add_argument("--freqmin", type=float, help="Filtro passa-basso minimo (Hz).")
 
-    parser.add_argument("--freqmax", type=float, help="Filtro passa-basso massimo (Hz).")
+    parser.add_argument(
+        "--freqmax", type=float, help="Filtro passa-basso massimo (Hz)."
+    )
 
-    parser.add_argument("--outdir", type=Path, help="Se impostata, salva i grafici nella cartella.")
+    parser.add_argument(
+        "--outdir", type=Path, help="Se impostata, salva i grafici nella cartella."
+    )
 
-    parser.add_argument("--no-plots", action="store_true", help="Disabilita la generazione dei grafici (utile in batch).")
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Disabilita la generazione dei grafici (utile in batch).",
+    )
 
     args = parser.parse_args()
-
-
 
     if not args.file and not args.dir:
 
         parser.error("Devi specificare --file oppure --dir")
-
-
 
     # Resolve paths
 
@@ -312,15 +274,11 @@ def main() -> None:
 
         args.dir = resolve_path(args.dir)
 
-    
-
     outdir = resolve_path(args.outdir)
 
     if outdir:
 
         outdir.mkdir(parents=True, exist_ok=True)
-
-    
 
     output_csv = resolve_path(args.output_csv) if args.output_csv else None
 
@@ -328,15 +286,9 @@ def main() -> None:
 
         output_csv.parent.mkdir(parents=True, exist_ok=True)
 
-
-
     files_to_process = list(args.dir.rglob("*.mseed")) if args.dir else [args.file]
 
-
-
     all_summaries = []
-
-
 
     for fpath in files_to_process:
 
@@ -350,25 +302,21 @@ def main() -> None:
 
             continue
 
-
-
         if args.component:
 
             st = st.select(component=args.component)
 
             if len(st) == 0:
 
-                logger.warning(f"Nessuna traccia con component {args.component} in {fpath}")
+                logger.warning(
+                    f"Nessuna traccia con component {args.component} in {fpath}"
+                )
 
                 continue
-
-
 
         trace = st[0]
 
         trace = trace.copy()
-
-
 
         if args.freqmin or args.freqmax:
 
@@ -380,9 +328,9 @@ def main() -> None:
 
             trace.taper(max_percentage=0.05, type="cosine")
 
-            trace.filter("bandpass", freqmin=fmin, freqmax=fmax, corners=4, zerophase=True)
-
-
+            trace.filter(
+                "bandpass", freqmin=fmin, freqmax=fmax, corners=4, zerophase=True
+            )
 
         if not args.no_plots:
 
@@ -392,15 +340,11 @@ def main() -> None:
 
             plot_sta_lta(trace, args.sta, args.lta, outdir)
 
-
-
         summary = summarize_trace(trace, args.sta, args.lta)
 
         summary["filename"] = fpath.name
 
         all_summaries.append(summary)
-
-
 
         if args.dir:
 
@@ -408,11 +352,7 @@ def main() -> None:
 
         else:
 
-            logger.info("
-
-" + json.dumps(summary, indent=2))
-
-
+            logger.info("\n" + json.dumps(summary, indent=2))
 
     if args.dir and output_csv and all_summaries:
 
@@ -421,9 +361,6 @@ def main() -> None:
         df.to_csv(output_csv, index=False)
 
         logger.info(f"Statistiche batch salvate in {output_csv} ({len(df)} file).")
-
-
-
 
 
 if __name__ == "__main__":

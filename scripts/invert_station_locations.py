@@ -11,8 +11,7 @@ import numpy as np
 import pandas as pd
 import pyproj
 from scipy.optimize import least_squares
-
-from utils import load_csv_with_checks, setup_logger, load_config
+from utils import load_config, load_csv_with_checks, setup_logger
 
 logger = setup_logger("invert_locations")
 
@@ -30,7 +29,12 @@ def read_events(path: Path, epsg: int) -> pd.DataFrame:
     df = load_csv_with_checks(path, required)
     df = df[list(required)].copy()
     df = df.rename(
-        columns={"LAT": "lat", "LON": "lon", "DEPTH": "depth_km", "TIME": "origin_time"},
+        columns={
+            "LAT": "lat",
+            "LON": "lon",
+            "DEPTH": "depth_km",
+            "TIME": "origin_time",
+        },
     )
     df["event_index"] = df["event_index"].astype(int)
     time_values = df["origin_time"].astype(str)
@@ -42,7 +46,11 @@ def read_events(path: Path, epsg: int) -> pd.DataFrame:
     if datetime_idx.any():
         dt_values = pd.to_datetime(time_values[datetime_idx], utc=True, errors="coerce")
         if dt_values.isna().any():
-            bad_ids = df.loc[datetime_idx][dt_values.isna()]["event_index"].astype(str).tolist()
+            bad_ids = (
+                df.loc[datetime_idx][dt_values.isna()]["event_index"]
+                .astype(str)
+                .tolist()
+            )
             raise SystemExit(
                 f"TIME non parsabile per gli event_index: {', '.join(bad_ids)}"
             )
@@ -51,7 +59,11 @@ def read_events(path: Path, epsg: int) -> pd.DataFrame:
     if numeric_idx.any():
         numeric_vals = pd.to_numeric(time_values[numeric_idx], errors="coerce")
         if numeric_vals.isna().any():
-            bad_ids = df.loc[numeric_idx][numeric_vals.isna()]["event_index"].astype(str).tolist()
+            bad_ids = (
+                df.loc[numeric_idx][numeric_vals.isna()]["event_index"]
+                .astype(str)
+                .tolist()
+            )
             raise SystemExit(
                 f"TIME numerico non parsabile per gli event_index: {', '.join(bad_ids)}"
             )
@@ -62,7 +74,9 @@ def read_events(path: Path, epsg: int) -> pd.DataFrame:
 
     df["origin_epoch"] = origin_epoch
 
-    transformer = pyproj.Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+    transformer = pyproj.Transformer.from_crs(
+        "EPSG:4326", f"EPSG:{epsg}", always_xy=True
+    )
     x, y = transformer.transform(df["lon"].to_numpy(), df["lat"].to_numpy())
     df["x_m"] = x
     df["y_m"] = y
@@ -106,7 +120,11 @@ def build_station_observations(
             continue
         event_points = group[["x_m", "y_m", "z_m"]].to_numpy(dtype=float)
         travel_times = group["travel_time"].to_numpy(dtype=float)
-        station_groups[station] = (event_points, travel_times, group["event_index"].to_numpy(dtype=int))
+        station_groups[station] = (
+            event_points,
+            travel_times,
+            group["event_index"].to_numpy(dtype=int),
+        )
     return station_groups
 
 
@@ -189,19 +207,53 @@ def parse_args() -> argparse.Namespace:
             "in base ai tempi di arrivo."
         )
     )
-    parser.add_argument("--events-csv", required=True, type=Path, help="File science_s1 (eventi).")
-    parser.add_argument("--picks-csv", required=True, type=Path, help="File science_s2 (pick delle fasi).")
+    parser.add_argument(
+        "--events-csv", required=True, type=Path, help="File science_s1 (eventi)."
+    )
+    parser.add_argument(
+        "--picks-csv",
+        required=True,
+        type=Path,
+        help="File science_s2 (pick delle fasi).",
+    )
     parser.add_argument(
         "--output-csv",
         type=Path,
-        default=project_root / "data" / "processed" / "station_locations_inverted.csv"
+        default=project_root / "data" / "processed" / "station_locations_inverted.csv",
     )
-    parser.add_argument("--phase-type", default="P", help="Tipo di fase da usare (default: P).")
-    parser.add_argument("--epsg", type=int, default=geo_cfg.get("epsg", 32633), help="Sistema di proiezione metrico.")
-    parser.add_argument("--guess-velocity", type=float, default=inv_cfg.get("guess_velocity_m_s", 4000.0), help="Velocità iniziale in m/s.")
-    parser.add_argument("--velocity-min", type=float, default=inv_cfg.get("velocity_min_m_s", 1500.0), help="Limite inferiore velocità (m/s).")
-    parser.add_argument("--velocity-max", type=float, default=inv_cfg.get("velocity_max_m_s", 7000.0), help="Limite superiore velocità (m/s).")
-    parser.add_argument("--min-events", type=int, default=inv_cfg.get("min_events_per_station", 8), help="Numero minimo di eventi per stazione.")
+    parser.add_argument(
+        "--phase-type", default="P", help="Tipo di fase da usare (default: P)."
+    )
+    parser.add_argument(
+        "--epsg",
+        type=int,
+        default=geo_cfg.get("epsg", 32633),
+        help="Sistema di proiezione metrico.",
+    )
+    parser.add_argument(
+        "--guess-velocity",
+        type=float,
+        default=inv_cfg.get("guess_velocity_m_s", 4000.0),
+        help="Velocità iniziale in m/s.",
+    )
+    parser.add_argument(
+        "--velocity-min",
+        type=float,
+        default=inv_cfg.get("velocity_min_m_s", 1500.0),
+        help="Limite inferiore velocità (m/s).",
+    )
+    parser.add_argument(
+        "--velocity-max",
+        type=float,
+        default=inv_cfg.get("velocity_max_m_s", 7000.0),
+        help="Limite superiore velocità (m/s).",
+    )
+    parser.add_argument(
+        "--min-events",
+        type=int,
+        default=inv_cfg.get("min_events_per_station", 8),
+        help="Numero minimo di eventi per stazione.",
+    )
     parser.add_argument(
         "--travel-time-min",
         type=float,
@@ -254,7 +306,9 @@ def main() -> None:
 
     results: list[dict[str, float]] = []
     failures: list[str] = []
-    for station, (event_points, travel_times, event_ids) in sorted(stations_data.items()):
+    for station, (event_points, travel_times, event_ids) in sorted(
+        stations_data.items()
+    ):
         outcome = invert_station(
             station=station,
             event_points=event_points,
@@ -271,12 +325,16 @@ def main() -> None:
         results.append(outcome)
 
     if not results:
-        raise SystemExit("Inversione fallita per tutte le stazioni. Controlla parametri e dati.")
+        raise SystemExit(
+            "Inversione fallita per tutte le stazioni. Controlla parametri e dati."
+        )
 
     out_df = pd.DataFrame(results)
 
     # Converte x/y back to lat/lon.
-    transformer = pyproj.Transformer.from_crs(f"EPSG:{args.epsg}", "EPSG:4326", always_xy=True)
+    transformer = pyproj.Transformer.from_crs(
+        f"EPSG:{args.epsg}", "EPSG:4326", always_xy=True
+    )
     lon, lat = transformer.transform(out_df["x_m"].to_numpy(), out_df["y_m"].to_numpy())
     out_df["latitude"] = lat
     out_df["longitude"] = lon
@@ -299,10 +357,14 @@ def main() -> None:
     out_df = out_df[cols_order]
     args.output_csv.parent.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(args.output_csv, index=False)
-    logger.info(f"Inversione completata per {len(out_df)} stazioni. Risultati in {args.output_csv}")
+    logger.info(
+        f"Inversione completata per {len(out_df)} stazioni. Risultati in {args.output_csv}"
+    )
 
     if failures:
-        logger.warning(f"Stazioni senza soluzione convergente: {', '.join(sorted(failures))}")
+        logger.warning(
+            f"Stazioni senza soluzione convergente: {', '.join(sorted(failures))}"
+        )
 
 
 if __name__ == "__main__":

@@ -1,25 +1,31 @@
-import pandas as pd
-import numpy as np
 import json
 import time
+
+import numpy as np
+import pandas as pd
 
 print("📖 Caricamento degli epicentri unici...")
 tempo_inizio = time.time()
 
 # Carichiamo i dati degli epicentri dalla fase di maggio
 df_geo = pd.read_csv("output_eventi_georeferenziati.csv.gz")
-maggio_geo = df_geo[pd.to_datetime(df_geo['arrival_iso']).dt.month == 5]
+maggio_geo = df_geo[pd.to_datetime(df_geo["arrival_iso"]).dt.month == 5]
 
 # Aggregazione per calcolare coordinate e magnitudo (energia)
-epicentri_maggio = maggio_geo.groupby('event_id').agg(
-    lat=('latitude', 'mean'),
-    lon=('longitude', 'mean'),
-    energia=('station', 'nunique')
-).reset_index().head(2500)
+epicentri_maggio = (
+    maggio_geo.groupby("event_id")
+    .agg(
+        lat=("latitude", "mean"),
+        lon=("longitude", "mean"),
+        energia=("station", "nunique"),
+    )
+    .reset_index()
+    .head(2500)
+)
 
-X = epicentri_maggio['lon'].values
-Y = epicentri_maggio['lat'].values
-Z = epicentri_maggio['energia'].values
+X = epicentri_maggio["lon"].values
+Y = epicentri_maggio["lat"].values
+Z = epicentri_maggio["energia"].values
 
 n = len(Z)
 print(f"📊 Calcolo dell'Indice di Moran su {n} eventi di Maggio...")
@@ -32,19 +38,19 @@ z_std = Z - z_mean
 W = np.zeros((n, n))
 for i in range(n):
     # Distanza euclidea locale approssimata
-    dist = np.sqrt((X - X[i])**2 + (Y - Y[i])**2)
-    
+    dist = np.sqrt((X - X[i]) ** 2 + (Y - Y[i]) ** 2)
+
     # TRUCCO GEOFISICO: Evitiamo la divisione per zero per eventi sovrapposti
     # Sostituiamo la distanza 0 con un valore spaziale microscopico
     dist[dist == 0] = 1e-6
-    
+
     # Ignoriamo i warning per eventuali divisioni al limite
-    with np.errstate(divide='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", invalid="ignore"):
         weights = 1.0 / dist
-        
-    weights[i] = 0.0              # Un punto non deve influenzare se stesso
-    weights[dist > 0.015] = 0.0   # Taglio dell'influenza a circa 1.5 km di raggio
-    
+
+    weights[i] = 0.0  # Un punto non deve influenzare se stesso
+    weights[dist > 0.015] = 0.0  # Taglio dell'influenza a circa 1.5 km di raggio
+
     # Standardizzazione per riga
     s = np.sum(weights)
     if s > 0:
@@ -75,37 +81,36 @@ for i in range(n):
     else:
         quadranti.append("Low-High (Outlier)")
 
-epicentri_maggio['LISA_Class'] = quadranti
-epicentri_maggio['Local_Moran'] = lisa_local
+epicentri_maggio["LISA_Class"] = quadranti
+epicentri_maggio["Local_Moran"] = lisa_local
 
 print("\n📉 === RISULTATI DELL'ANALISI DI MORAN GLOBALE CORRETTA ===")
 print("-" * 55)
 print(f"🎯 INDICE DI MORAN GLOBALE (I): {moran_global:.4f}")
 if moran_global > 0:
     print("➡️ Autocorrelazione Spaziale POSITIVA: Struttura a cluster confermata!")
-    print("   La rottura del terreno sta seguendo chiare direttrici geometriche (faglie).")
+    print(
+        "   La rottura del terreno sta seguendo chiare direttrici geometriche (faglie)."
+    )
 else:
     print("➡️ Distribuzione casuale.")
 print("-" * 55)
 
 print("\n🗺️ === STATISTICHE LOCALI (LISA CAMPIONE) ===")
-print(epicentri_maggio['LISA_Class'].value_counts().to_string())
+print(epicentri_maggio["LISA_Class"].value_counts().to_string())
 
 # Esportazione del file GeoJSON per la mappatura
 features = []
 for _, row in epicentri_maggio.iterrows():
     feature = {
         "type": "Feature",
-        "geometry": {
-            "type": "Point",
-            "coordinates": [row['lon'], row['lat']]
-        },
+        "geometry": {"type": "Point", "coordinates": [row["lon"], row["lat"]]},
         "properties": {
-            "event_id": row['event_id'],
-            "energia": int(row['energia']),
-            "lisa_cluster": row['LISA_Class'],
-            "local_moran": float(row['Local_Moran'])
-        }
+            "event_id": row["event_id"],
+            "energia": int(row["energia"]),
+            "lisa_cluster": row["LISA_Class"],
+            "local_moran": float(row["Local_Moran"]),
+        },
     }
     features.append(feature)
 

@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 # Aggiungiamo la root del progetto al sys.path per garantire importazioni assolute e globali
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -54,7 +54,9 @@ def collect_station_codes(delta_path: Path) -> pd.Series:
     elif "station_id" in df.columns:
         stations = df["station_id"].astype(str).str.split(".").str[1]
     else:
-        raise SystemExit("Il file delta deve contenere la colonna 'station' oppure 'station_id'.")
+        raise SystemExit(
+            "Il file delta deve contenere la colonna 'station' oppure 'station_id'."
+        )
     return stations.dropna().astype(str).str.strip().str.upper().drop_duplicates()
 
 
@@ -76,18 +78,24 @@ def main() -> None:
         logger.info("Nessuna stazione mancante: file aggiornato.")
         return
 
-    logger.info(f"Recupero coordinate per {len(missing)} stazioni: {', '.join(missing)}")
-    
+    logger.info(
+        f"Recupero coordinate per {len(missing)} stazioni: {', '.join(missing)}"
+    )
+
     try:
         client = Client("INGV", timeout=30)
     except Exception as exc:
-        raise SystemExit(f"Impossibile inizializzare il client FDSN. Rete non disponibile? Errore: {exc}")
-        
+        raise SystemExit(
+            f"Impossibile inizializzare il client FDSN. Rete non disponibile? Errore: {exc}"
+        )
+
     rows = []
     failures = []
     for code in missing:
         try:
-            inventory = client.get_stations(network=args.network, station=code, level="station")
+            inventory = client.get_stations(
+                network=args.network, station=code, level="station"
+            )
         except Exception as exc:  # noqa: BLE001
             failures.append((code, str(exc)))
             continue

@@ -6,6 +6,7 @@ mappe raster con basemap e confini amministrativi.
 Requisiti:
     pip install pandas numpy matplotlib geopandas rasterio scipy contextily
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,8 +21,8 @@ import rasterio
 from rasterio.transform import array_bounds, from_bounds
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 from scipy.interpolate import griddata
-
-from utils import load_csv_with_checks, setup_logger, load_config, get_project_root
+from utils import (get_project_root, load_config, load_csv_with_checks,
+                   setup_logger)
 
 logger = setup_logger("view_maps")
 
@@ -30,6 +31,7 @@ logger = setup_logger("view_maps")
 # Lettura CSV e mappe base
 # ---------------------------------------------------------------------------
 
+
 def read_delta_csv(path: Path) -> pd.DataFrame:
     return load_csv_with_checks(path, {"x_m", "y_m", "delta_seconds"})
 
@@ -37,8 +39,12 @@ def read_delta_csv(path: Path) -> pd.DataFrame:
 def scatter_map(df: pd.DataFrame, title: str, out_path: Path | None) -> None:
     fig, ax = plt.subplots(figsize=(8, 6))
     sc = ax.scatter(
-        df["x_m"], df["y_m"], c=df["delta_seconds"],
-        cmap="RdBu_r", s=10, edgecolors="none"
+        df["x_m"],
+        df["y_m"],
+        c=df["delta_seconds"],
+        cmap="RdBu_r",
+        s=10,
+        edgecolors="none",
     )
     plt.colorbar(sc, ax=ax, label="Delta (s)")
     ax.set_title(title)
@@ -66,8 +72,8 @@ def interpolated_map(
     z = df["delta_seconds"].values
 
     grid_x, grid_y = np.mgrid[
-        x.min():x.max():complex(grid_points),
-        y.min():y.max():complex(grid_points),
+        x.min() : x.max() : complex(grid_points),
+        y.min() : y.max() : complex(grid_points),
     ]
     grid_z = griddata((x, y), z, (grid_x, grid_y), method="cubic")
 
@@ -86,7 +92,9 @@ def interpolated_map(
 
     if contour_levels > 0:
         levels = np.linspace(np.nanmin(grid_z), np.nanmax(grid_z), contour_levels)
-        cs = ax.contour(grid_x, grid_y, grid_z, levels=levels, colors="k", linewidths=0.5)
+        cs = ax.contour(
+            grid_x, grid_y, grid_z, levels=levels, colors="k", linewidths=0.5
+        )
         ax.clabel(cs, fmt="%.1f", fontsize=7)
 
     fig.tight_layout()
@@ -125,13 +133,18 @@ def stats_bar(stats_csv: Path, out_path: Path | None) -> None:
 # Raster e GeoTIFF
 # ---------------------------------------------------------------------------
 
-def reproject_raster(src_path: Path, dst_crs: str = "EPSG:3857") -> tuple[np.ndarray, rasterio.Affine]:
+
+def reproject_raster(
+    src_path: Path, dst_crs: str = "EPSG:3857"
+) -> tuple[np.ndarray, rasterio.Affine]:
     with rasterio.open(src_path) as src:
         transform, width, height = calculate_default_transform(
             src.crs, dst_crs, src.width, src.height, *src.bounds
         )
         kwargs = src.meta.copy()
-        kwargs.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
+        kwargs.update(
+            {"crs": dst_crs, "transform": transform, "width": width, "height": height}
+        )
         data = np.empty((src.count, height, width), dtype=np.float32)
         for i in range(1, src.count + 1):
             reproject(
@@ -184,9 +197,21 @@ def raster_with_basemap(
         slow = gdf_points[gdf_points["delta_seconds"] >= anomaly_threshold]
         fast = gdf_points[gdf_points["delta_seconds"] <= -anomaly_threshold]
         if not slow.empty:
-            slow.plot(ax=ax, color="red", markersize=5, marker="o", label=f">= {anomaly_threshold}s")
+            slow.plot(
+                ax=ax,
+                color="red",
+                markersize=5,
+                marker="o",
+                label=f">= {anomaly_threshold}s",
+            )
         if not fast.empty:
-            fast.plot(ax=ax, color="blue", markersize=5, marker="o", label=f"<= -{anomaly_threshold}s")
+            fast.plot(
+                ax=ax,
+                color="blue",
+                markersize=5,
+                marker="o",
+                label=f"<= -{anomaly_threshold}s",
+            )
     else:
         gdf_points.plot(ax=ax, color="black", markersize=3, alpha=0.5, label="Stazioni")
 
@@ -216,12 +241,11 @@ def raster_with_basemap(
     plt.close(fig)
 
 
-def difference_map(base_df: pd.DataFrame, soft_df: pd.DataFrame, out_path: Path | None) -> None:
+def difference_map(
+    base_df: pd.DataFrame, soft_df: pd.DataFrame, out_path: Path | None
+) -> None:
     merged = soft_df.merge(
-        base_df,
-        on=["x_m", "y_m"],
-        how="inner",
-        suffixes=("_soft", "_base")
+        base_df, on=["x_m", "y_m"], how="inner", suffixes=("_soft", "_base")
     )
     merged["delta_diff"] = merged["delta_seconds_soft"] - merged["delta_seconds_base"]
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -283,6 +307,7 @@ def write_diff_geotiff(
 # MAIN
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     config = load_config()
     map_cfg = config.get("mapping", {})
@@ -292,22 +317,49 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Visualizza run base/soft, differenza e mappe raster con basemap."
     )
-    parser.add_argument("--base-csv", required=True, type=Path, help="delta_surface.csv run base")
-    parser.add_argument("--soft-csv", required=True, type=Path, help="delta_surface_soft.csv run soft")
-    parser.add_argument("--base-raster", required=True, type=Path, help="GeoTIFF interpolato base")
-    parser.add_argument("--soft-raster", required=True, type=Path, help="GeoTIFF interpolato soft")
-    parser.add_argument("--stats-csv", type=Path, help="station_delta_stats.csv per grafico stazioni")
-    parser.add_argument("--outdir", type=Path, default=project_root / "results" / "maps")
-    parser.add_argument("--grid-points", type=int, default=map_cfg.get("grid_points", 400))
-    parser.add_argument("--contour-levels", type=int, default=map_cfg.get("contour_levels", 8))
-    parser.add_argument("--anomaly-threshold", type=float, default=map_cfg.get("default_anomaly_threshold", 2.5))
-    parser.add_argument("--boundaries", type=Path, help="Shapefile/GeoJSON dei confini amministrativi")
+    parser.add_argument(
+        "--base-csv", required=True, type=Path, help="delta_surface.csv run base"
+    )
+    parser.add_argument(
+        "--soft-csv", required=True, type=Path, help="delta_surface_soft.csv run soft"
+    )
+    parser.add_argument(
+        "--base-raster", required=True, type=Path, help="GeoTIFF interpolato base"
+    )
+    parser.add_argument(
+        "--soft-raster", required=True, type=Path, help="GeoTIFF interpolato soft"
+    )
+    parser.add_argument(
+        "--stats-csv", type=Path, help="station_delta_stats.csv per grafico stazioni"
+    )
+    parser.add_argument(
+        "--outdir", type=Path, default=project_root / "results" / "maps"
+    )
+    parser.add_argument(
+        "--grid-points", type=int, default=map_cfg.get("grid_points", 400)
+    )
+    parser.add_argument(
+        "--contour-levels", type=int, default=map_cfg.get("contour_levels", 8)
+    )
+    parser.add_argument(
+        "--anomaly-threshold",
+        type=float,
+        default=map_cfg.get("default_anomaly_threshold", 2.5),
+    )
+    parser.add_argument(
+        "--boundaries", type=Path, help="Shapefile/GeoJSON dei confini amministrativi"
+    )
     parser.add_argument(
         "--focus-margin-km",
         type=float,
         help="Se impostato, limita la vista basemap alla bounding box delle stazioni con il margine indicato (km).",
     )
-    parser.add_argument("--epsg", type=int, default=geo_cfg.get("epsg", 32633), help="Sistema di proiezione metrico.")
+    parser.add_argument(
+        "--epsg",
+        type=int,
+        default=geo_cfg.get("epsg", 32633),
+        help="Sistema di proiezione metrico.",
+    )
     args = parser.parse_args()
 
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -334,7 +386,9 @@ def main() -> None:
         contour_levels=args.contour_levels,
     )
 
-    write_diff_geotiff(base_grid, soft_grid, args.outdir / "delta_diff.tif", epsg=args.epsg)
+    write_diff_geotiff(
+        base_grid, soft_grid, args.outdir / "delta_diff.tif", epsg=args.epsg
+    )
 
     if args.stats_csv:
         stats_bar(args.stats_csv, args.outdir / "station_soft_mean.png")
