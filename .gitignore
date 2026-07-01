@@ -17,6 +17,7 @@ examples/mobile_devices/scoperte_automatiche.csv
 
 # Mappe, GIS e risultati generati
 results/
+runs/
 
 # File di log della pipeline
 logs/
