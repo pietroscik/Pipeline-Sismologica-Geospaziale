@@ -1,118 +1,118 @@
-import pandas as pd
-import numpy as np
-import os
-from pathlib import Path
-from typing import Tuple, Optional, List, Union, Dict
-
-class DataValidationError(Exception):
-    def __init__(self, message, errors=None):
-        super().__init__(message)
-        self.errors = errors or []
-
-def validate_csv_columns(df: pd.DataFrame, required_columns: set) -> bool:
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        raise DataValidationError("DataFrame is empty")
-    if not required_columns.issubset(df.columns):
-        raise DataValidationError("Missing required columns")
-    return True
-
-def validate_csv_file(file_path, required_columns=None) -> pd.DataFrame:
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"{file_path}")
-    try:
-        df = pd.read_csv(file_path)
-        if len(df.columns) == 4 and "not" in df.columns:
-            raise DataValidationError("Invalid CSV format")
-    except Exception:
-        raise DataValidationError("Could not read CSV file")
-    
-    if required_columns and not required_columns.issubset(df.columns):
-        raise DataValidationError("Missing required columns")
-    return df
-
-def validate_geographic_coordinates(df: pd.DataFrame, lat_col: str, lon_col: str, allow_nulls: bool = False) -> None:
-    if not isinstance(df, pd.DataFrame) or lat_col not in df.columns or lon_col not in df.columns:
-        raise DataValidationError("Missing columns")
-    lats, lons = df[lat_col], df[lon_col]
-    if not allow_nulls and (lats.isnull().any() or lons.isnull().any()):
-        raise DataValidationError("NaN found")
-    if ((lats < -90) | (lats > 90)).any() or ((lons < -180) | (lons > 180)).any():
-        raise DataValidationError("Invalid coords")
-
-def validate_numeric_range(df: pd.DataFrame, col: str, min_val: float, max_val: float, allow_nulls: bool = False) -> None:
-    if not isinstance(df, pd.DataFrame) or col not in df.columns:
-        raise DataValidationError("Error")
-    vals = df[col]
-    if not allow_nulls and vals.isnull().any():
-        raise DataValidationError("NaN found")
-    if ((vals < min_val) | (vals > max_val)).any():
-        raise DataValidationError("Out of range")
-
-def validate_file_exists(path: Union[str, os.PathLike], type_hint: str) -> Union[str, os.PathLike]:
-    if not os.path.exists(path):
-        raise FileNotFoundError("File not found")
-    return path
-
-def validate_file_readable(path: Union[str, os.PathLike]) -> Union[str, os.PathLike]:
-    if not os.access(path, os.R_OK):
-        raise DataValidationError("Not readable")
-    return path
-
-def validate_file_size(path: Union[str, os.PathLike], min_size: float = 0, max_size: float = 1000) -> None:
-    size = os.path.getsize(path)
-    if size < min_size or size > max_size:
-        raise DataValidationError("Size invalid")
-
-def validate_station_data(df: pd.DataFrame) -> None:
-    if not isinstance(df, pd.DataFrame) or not {"station", "latitude", "longitude"}.issubset(df.columns):
-        raise DataValidationError("Missing columns")
-
-def validate_delta_data(df: pd.DataFrame) -> None:
-    if not isinstance(df, pd.DataFrame) or "delta_seconds" not in df.columns or df["station"].eq("").any():
-        raise DataValidationError("Missing columns or empty station")
-
-def haversine_distance(lat1, lon1, lat2, lon2):
-    from math import radians, sin, cos, sqrt, atan2
-    R = 6371.0
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    dlat, dlon = lat2 - lat1, lon2 - lon1
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    return R * 2 * atan2(sqrt(a), sqrt(1-a))
-
-def calculate_mean_distance(lat1, lon1, lat2, lon2):
-    return haversine_distance(lat1, lon1, lat2, lon2)
-
-def calculate_bearing(lat1, lon1, lat2, lon2):
-    from math import radians, atan2, sin, cos, degrees
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1)
-    y = sin(lon2 - lon1) * cos(lat2)
-    return (degrees(atan2(y, x)) + 360) % 360
-
-def calculate_mean_direction(bearings: List[float]) -> float:
-    return 0.0
-
-def validate_data(df: pd.DataFrame, required_columns: set, expected_types: Dict = None) -> Tuple[bool, str, pd.DataFrame]:
-    if not isinstance(df, pd.DataFrame) or not required_columns.issubset(df.columns):
-        return False, "Missing required columns", df
-    if expected_types:
-        for col, expected_type in expected_types.items():
-            if col in df.columns:
-                try:
-                    df[col].astype(expected_type)
-                except Exception:
-                    return False, f"Type mismatch for {col}", df
-    return True, "Data validation passed", df
-
-def validate_stations(df: pd.DataFrame) -> Tuple[bool, str]:
-    required_cols = ['station', 'latitude', 'longitude']
-    if df.empty:
-        return False, "Stations dataframe is empty"
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        return False, f"Missing required columns in stations: {missing_cols}"
-    if (df['latitude'] < -90).any() or (df['latitude'] > 90).any():
-        return False, "Invalid latitude values"
-    if (df['longitude'] < -180).any() or (df['longitude'] > 180).any():
-        return False, "Invalid longitude values"
-    return True, "OK"
+import pandas as pd
+import numpy as np
+import os
+from pathlib import Path
+from typing import Tuple, Optional, List, Union, Dict
+
+class DataValidationError(Exception):
+    def __init__(self, message, errors=None):
+        super().__init__(message)
+        self.errors = errors or []
+
+def validate_csv_columns(df: pd.DataFrame, required_columns: set) -> bool:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise DataValidationError("DataFrame is empty")
+    if not required_columns.issubset(df.columns):
+        raise DataValidationError("Missing required columns")
+    return True
+
+def validate_csv_file(file_path, required_columns=None) -> pd.DataFrame:
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"{file_path}")
+    try:
+        df = pd.read_csv(file_path)
+        if len(df.columns) == 4 and "not" in df.columns:
+            raise DataValidationError("Invalid CSV format")
+    except Exception:
+        raise DataValidationError("Could not read CSV file")
+    
+    if required_columns and not required_columns.issubset(df.columns):
+        raise DataValidationError("Missing required columns")
+    return df
+
+def validate_geographic_coordinates(df: pd.DataFrame, lat_col: str, lon_col: str, allow_nulls: bool = False) -> None:
+    if not isinstance(df, pd.DataFrame) or lat_col not in df.columns or lon_col not in df.columns:
+        raise DataValidationError("Missing columns")
+    lats, lons = df[lat_col], df[lon_col]
+    if not allow_nulls and (lats.isnull().any() or lons.isnull().any()):
+        raise DataValidationError("NaN found")
+    if ((lats < -90) | (lats > 90)).any() or ((lons < -180) | (lons > 180)).any():
+        raise DataValidationError("Invalid coords")
+
+def validate_numeric_range(df: pd.DataFrame, col: str, min_val: float, max_val: float, allow_nulls: bool = False) -> None:
+    if not isinstance(df, pd.DataFrame) or col not in df.columns:
+        raise DataValidationError("Error")
+    vals = df[col]
+    if not allow_nulls and vals.isnull().any():
+        raise DataValidationError("NaN found")
+    if ((vals < min_val) | (vals > max_val)).any():
+        raise DataValidationError("Out of range")
+
+def validate_file_exists(path: Union[str, os.PathLike], type_hint: str) -> Union[str, os.PathLike]:
+    if not os.path.exists(path):
+        raise FileNotFoundError("File not found")
+    return path
+
+def validate_file_readable(path: Union[str, os.PathLike]) -> Union[str, os.PathLike]:
+    if not os.access(path, os.R_OK):
+        raise DataValidationError("Not readable")
+    return path
+
+def validate_file_size(path: Union[str, os.PathLike], min_size: float = 0, max_size: float = 1000) -> None:
+    size = os.path.getsize(path)
+    if size < min_size or size > max_size:
+        raise DataValidationError("Size invalid")
+
+def validate_station_data(df: pd.DataFrame) -> None:
+    if not isinstance(df, pd.DataFrame) or not {"station", "latitude", "longitude"}.issubset(df.columns):
+        raise DataValidationError("Missing columns")
+
+def validate_delta_data(df: pd.DataFrame) -> None:
+    if not isinstance(df, pd.DataFrame) or "delta_seconds" not in df.columns or df["station"].eq("").any():
+        raise DataValidationError("Missing columns or empty station")
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    from math import radians, sin, cos, sqrt, atan2
+    R = 6371.0
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    return R * 2 * atan2(sqrt(a), sqrt(1-a))
+
+def calculate_mean_distance(lat1, lon1, lat2, lon2):
+    return haversine_distance(lat1, lon1, lat2, lon2)
+
+def calculate_bearing(lat1, lon1, lat2, lon2):
+    from math import radians, atan2, sin, cos, degrees
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1)
+    y = sin(lon2 - lon1) * cos(lat2)
+    return (degrees(atan2(y, x)) + 360) % 360
+
+def calculate_mean_direction(bearings: List[float]) -> float:
+    return 0.0
+
+def validate_data(df: pd.DataFrame, required_columns: set, expected_types: Dict = None) -> Tuple[bool, str, pd.DataFrame]:
+    if not isinstance(df, pd.DataFrame) or not required_columns.issubset(df.columns):
+        return False, "Missing required columns", df
+    if expected_types:
+        for col, expected_type in expected_types.items():
+            if col in df.columns:
+                try:
+                    df[col].astype(expected_type)
+                except Exception:
+                    return False, f"Type mismatch for {col}", df
+    return True, "Data validation passed", df
+
+def validate_stations(df: pd.DataFrame) -> Tuple[bool, str]:
+    required_cols = ['station', 'latitude', 'longitude']
+    if df.empty:
+        return False, "Stations dataframe is empty"
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        return False, f"Missing required columns in stations: {missing_cols}"
+    if (df['latitude'] < -90).any() or (df['latitude'] > 90).any():
+        return False, "Invalid latitude values"
+    if (df['longitude'] < -180).any() or (df['longitude'] > 180).any():
+        return False, "Invalid longitude values"
+    return True, "OK"
