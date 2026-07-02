@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
+from esda.moran import Moran
 from rasterio.transform import from_bounds
 from scipy.interpolate import griddata
 
@@ -295,6 +296,49 @@ def resolve_outdir(outdir: Optional[Path]) -> Optional[Path]:
     return outdir
 
 
+def analyze_spatial_autocorrelation(gdf: gpd.GeoDataFrame, outdir: Optional[Path], title_suffix: str) -> None:
+    """
+    Calcola e salva l'indice di Moran per l'autocorrelazione spaziale.
+
+    Args:
+        gdf: GeoDataFrame con i dati e la geometria.
+        outdir: Cartella di output per il report.
+        title_suffix: Suffisso per il nome del file di report.
+    """
+    if gdf.empty or 'delta_seconds' not in gdf.columns:
+        logger.warning("GeoDataFrame vuoto o senza 'delta_seconds', salto l'analisi di Moran.")
+        return
+
+    logger.info("📈 Calcolo dell'autocorrelazione spaziale (Indice di Moran)...")
+
+    try:
+        from libpysal.weights import KNN
+
+        # Calcola i pesi spaziali basati sui 5 vicini più prossimi (k-nearest neighbors)
+        weights = KNN.from_dataframe(gdf, k=5)
+        weights.transform = 'R'  # Normalizzazione delle righe
+
+        # Calcola l'indice di Moran sulla colonna 'delta_seconds'
+        moran = Moran(gdf['delta_seconds'], weights)
+
+        logger.info(f"   - Indice di Moran: {moran.I:.4f}")
+        logger.info(f"   - p-value: {moran.p_sim:.4f}")
+
+        if outdir:
+            report_path = outdir / f"moran_analysis_{title_suffix}.txt"
+            with open(report_path, 'w') as f:
+                f.write("Analisi di Autocorrelazione Spaziale (Indice di Moran)\n")
+                f.write("="*50 + "\n")
+                f.write(f"Indice di Moran (I): {moran.I:.4f}\n")
+                f.write(f"P-value (simulato): {moran.p_sim:.4f}\n")
+                f.write(f"Varianza attesa (EI): {moran.EI:.4f}\n")
+            logger.info(f"✅ Report di Moran salvato in: {report_path}")
+
+    except ImportError:
+        logger.error("Librerie per l'analisi di Moran non trovate. Eseguire: pip install esda libpysal")
+    except Exception as e:
+        logger.error(f"Errore durante il calcolo dell'indice di Moran: {e}")
+
 def main() -> None:
 
     config = load_config()
@@ -438,6 +482,13 @@ def main() -> None:
 
         plot_station_stats(args.stats_csv, outdir)
 
+    # --- NUOVA INTEGRAZIONE: Analisi di Moran ---
+    gdf = gpd.GeoDataFrame(
+        df,
+        geometry=gpd.points_from_xy(df["x_m"], df["y_m"]),
+        crs=f"EPSG:{args.epsg}",
+    )
+    analyze_spatial_autocorrelation(gdf, outdir, args.title_suffix)
     logger.info("Analisi completata.")
 
 

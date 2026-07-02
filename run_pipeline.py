@@ -494,6 +494,19 @@ Esempi di uso:
         help="Tipo di modello ML per analisi mobile (default: compare)",
     )
 
+    # --- MODIFICA: Le analisi sono di default, si possono saltare ---
+    parser.add_argument(
+        "--skip-b-value",
+        action="store_true",
+        help="Salta l'analisi del b-value (eseguita di default con --mobile-analysis)."
+    )
+
+    parser.add_argument(
+        "--skip-noise-analysis",
+        action="store_true",
+        help="Salta l'analisi del rumore antropico (eseguita di default con --mobile-analysis)."
+    )
+    
     parser.add_argument(
         "--mobile-generate-alerts",
         action="store_true",
@@ -561,7 +574,7 @@ Esempi di uso:
 
     # Setup directory structure
 
-    data_interim_dir, data_processed_dir, maps_dir = setup_run_directory(run_dir)
+    data_interim_dir, data_processed_dir, maps_dir, mobile_analysis_dir = setup_run_directory(run_dir)
 
     # Track files for cleanup
 
@@ -948,47 +961,80 @@ Esempi di uso:
 
             logger.info("=" * 60)
 
-            # Costruisci comando per mobile_analysis_pipeline.py
+            # NUOVA LOGICA: Chiama direttamente lo script di training ML
+            # passando l'output della pipeline corrente come input.
+            train_script_path = scripts_dir / "train_risk_model.py"            
+            
+            # L'input per il training è il file dei delta, che contiene i dati grezzi
+            # necessari per il feature engineering temporale.
+            input_for_ml = out_station_deltas
+            if not input_for_ml or not input_for_ml.exists():
+                logger.error(f"File di input per l'analisi ML non trovato: {input_for_ml}")
+                raise FileNotFoundError("Input per ML non disponibile.")
 
-            mobile_script = PROJECT_ROOT / "mobile" / "mobile_analysis_pipeline.py"
-            if not mobile_script.exists():
-                logger.error(f"Script mobile non trovato: {mobile_script}")
-                logger.error("Assicurati che mobile/mobile_analysis_pipeline.py esista")
+            cmd_mobile = [
+                python_exe,
+                str(train_script_path),
+                "--dataset",
+                str(input_for_ml),
+                "--model-output-dir",
+                str(mobile_analysis_dir / "models"),
+                "--model-type",
+                args.mobile_model_type,
+            ]
 
-            else:
+            if args.mobile_generate_alerts:
+                cmd_mobile.append("--generate-alerts")
 
-                mobile_output_dir = run_dir / "mobile_analysis"
+            try:
+                run_cmd(cmd_mobile, optional=False, timeout=args.timeout * 3)
+                logger.info("✅ Analisi ML completata!")
+                logger.info(f"   Risultati in: {mobile_analysis_dir}")
+            except Exception as e:
+                logger.error(f"❌ Analisi mobile fallita: {e}")
+        
+        # --- ESECUZIONE ANALISI INTEGRANTI (di default con --mobile-analysis) ---
 
-                cmd_mobile = [
+        if not args.skip_b_value:
+            logger.info("=" * 60)
+            logger.info("📈 Esecuzione analisi b-value...")
+            b_value_script_path = PROJECT_ROOT / "examples" / "mobile_devices" / "calculate_b_value.py"
+            b_value_report_path = mobile_analysis_dir / "b_value_report.txt"
+
+            # Questa analisi usa il file dei delta grezzi
+            if input_for_ml and input_for_ml.exists():
+                run_cmd([
                     python_exe,
-                    str(mobile_script),
-                    "--input-csv",
-                    out_deltas_spatial
-                    or data_processed_dir / "deltas_spatial.csv",
-                    "--stations-csv",
-                    stations_csv
-                    or data_raw_dir / "stations.csv",
-                    "--output-dir",
-                    str(mobile_output_dir),
-                    "--min-stations",
-                    str(args.mobile_min_stations),
-                    "--alert-threshold",
-                    str(args.mobile_alert_threshold),
-                    "--model-type",
-                    args.mobile_model_type,
-                ]
+                    str(b_value_script_path),
+                    str(input_for_ml),
+                    "--mag-col", "delta_seconds", # Usiamo delta_seconds come proxy della magnitudo
+                    "--output-file", str(b_value_report_path)
+                ], optional=True, timeout=args.timeout)
+                logger.info(f"   Report b-value salvato in: {b_value_report_path}")
+            else:
+                logger.warning("Input per analisi b-value non trovato. Salto.")
+        else:
+            logger.info("Analisi b-value saltata su richiesta.")
 
-                if args.mobile_generate_alerts:
+        if not args.skip_noise_analysis:
+            logger.info("=" * 60)
+            logger.info("🎧 Esecuzione analisi rumore antropico...")
+            noise_script_path = PROJECT_ROOT / "examples" / "mobile_devices" / "analyze_anthropogenic_noise.py"
+            noise_report_path = mobile_analysis_dir / "anthropogenic_noise_report.txt"
 
-                    cmd_mobile.append("--generate-alerts")
-
-                # run_cmd gestisce già la conversione a stringa e il logging
-                try:
-                    run_cmd(cmd_mobile, optional=False, timeout=args.timeout * 3)
-                    logger.info("✅ Analisi mobile completata!")
-                    logger.info(f"   Risultati in: {mobile_output_dir}")
-                except Exception as e:
-                    logger.error(f"❌ Analisi mobile fallita: {e}")
+            # Anche questa analisi usa il file dei delta grezzi
+            if input_for_ml and input_for_ml.exists():
+                run_cmd([
+                    python_exe,
+                    str(noise_script_path),
+                    str(input_for_ml),
+                    "--output-file", str(noise_report_path)
+                ], optional=True, timeout=args.timeout)
+                logger.info(f"   Report rumore antropico salvato in: {noise_report_path}")
+            else:
+                logger.warning("Input per analisi rumore non trovato. Salto.")
+        else:
+            logger.info("Analisi rumore antropico saltata su richiesta.")
 
         logger.info("=" * 60)
 
@@ -1065,6 +1111,10 @@ Esempi di uso:
     except Exception as exc:
 
         logger.error(f"❌ Errore inaspettato: {exc}", exc_info=True)
+
+        if args.cleanup_on_error:
+
+            cleanup_run_directory(run_dir)
 
         if args.cleanup_on_error:
 
