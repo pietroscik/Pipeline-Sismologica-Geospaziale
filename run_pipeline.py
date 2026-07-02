@@ -9,6 +9,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+from scripts.utils import load_csv_with_checks, setup_logger, load_config
 
 # quick early-help so subprocess python run_pipeline.py --help returns a predictable header
 if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
@@ -21,14 +22,9 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-
-sys.path.append(str(PROJECT_ROOT / "scripts"))
-
-sys.path.append(str(PROJECT_ROOT / "mobile"))
-
-from data_validator import DataValidationError, validate_csv_file
-
-from scripts.utils import setup_logger  # noqa: E402
+# L'hack su sys.path è stato completamente rimosso!
+from mobile.data_validator import DataValidationError, validate_csv_file
+from scripts.utils import setup_logger
 
 logger = setup_logger("orchestrator")
 

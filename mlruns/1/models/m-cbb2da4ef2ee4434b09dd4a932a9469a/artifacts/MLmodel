@@ -1,0 +1,23 @@
+artifact_path: file:C:/Users/39329/OneDrive - Uniparthenope/Pipeline Sismologica Geospaziale/mlruns/1/models/m-cbb2da4ef2ee4434b09dd4a932a9469a/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.skops
+    predict_fn: predict
+    python_version: 3.13.5
+  sklearn:
+    code: null
+    pickled_model: model.skops
+    serialization_format: skops
+    sklearn_version: 1.9.0
+    skops_trusted_types: null
+mlflow_version: 3.14.0
+model_id: m-cbb2da4ef2ee4434b09dd4a932a9469a
+model_size_bytes: 16039462
+model_uuid: m-cbb2da4ef2ee4434b09dd4a932a9469a
+prompts: null
+run_id: dbe69fc1e3bc40489d8ead036343e192
+utc_time_created: '2026-07-02 08:17:22.657080'

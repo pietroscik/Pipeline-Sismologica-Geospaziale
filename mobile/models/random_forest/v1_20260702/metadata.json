@@ -1,0 +1,22 @@
+{
+  "model_type": "random_forest",
+  "dataset": "C:\\Users\\39329\\OneDrive - Uniparthenope\\Pipeline Sismologica Geospaziale\\examples\\mobile_devices\\scoperte_automatiche.csv.gz",
+  "training_samples": 391104,
+  "test_samples": 97777,
+  "training_time_seconds": 12.779966,
+  "timestamp": "2026-07-02T10:17:20.792929",
+  "features": [
+    "sampling_rate",
+    "delta_seconds",
+    "start_epoch",
+    "end_epoch"
+  ],
+  "target_stats": {
+    "min": 0.0,
+    "max": 1.0,
+    "mean": 0.35924299299715423
+  },
+  "version": "v1_20260702",
+  "saved_at": "2026-07-02T10:17:20.850724",
+  "file_size": 14525569
+}

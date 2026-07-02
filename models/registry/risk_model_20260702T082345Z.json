@@ -1,0 +1,20 @@
+{
+  "model_name": "risk_model",
+  "version": "risk_model_20260702T082345Z",
+  "created_at_utc": "20260702T082345Z",
+  "metrics": {
+    "mse": 7.488433077273859e-06,
+    "rmse": 0.0027365001511554608,
+    "mae": 0.0013310027161406955,
+    "r2": 0.9999171840587563,
+    "max_error": 0.02066957474200723
+  },
+  "params": {
+    "model_type": "random_forest",
+    "n_estimators": 100,
+    "max_depth": 10,
+    "random_state": 42
+  },
+  "artifact_path": "C:\\Users\\39329\\OneDrive - Uniparthenope\\Pipeline Sismologica Geospaziale\\mobile\\models\\random_forest\\v2_20260702\\model.joblib",
+  "run_id": "c13d4ee872a1479ab90cb7903e00cd64"
+}
