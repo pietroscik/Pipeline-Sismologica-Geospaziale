@@ -378,6 +378,13 @@ def main() -> None:
         help="Sistema di proiezione metrico (es. 32633).",
     )
 
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="cubic",
+        choices=["linear", "nearest", "cubic"],
+        help="Metodo di interpolazione per la griglia (default: cubic).",
+    )
     args = parser.parse_args()
 
     df = load_delta_csv(args.delta_csv)
@@ -421,7 +428,7 @@ def main() -> None:
 
         export_shapefile(df, shapefile_path, epsg=args.epsg)
 
-    if args.anomaly_threshold is not None or args.threshold is not None:
+    if args.anomaly_threshold is not None:
 
         plot_anomaly_clusters(
             df, outdir, args.anomaly_threshold, args.title_suffix, epsg=args.epsg

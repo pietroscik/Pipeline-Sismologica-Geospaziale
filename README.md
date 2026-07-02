@@ -39,16 +39,30 @@ Il progetto produce output tabellari e cartografici compatibili con flussi GIS e
 
 ### Flusso logico
 
+Il cuore del sistema è l'orchestratore `run_pipeline.py`, che può essere controllato sia da riga di comando (CLI) che da un'interfaccia web (`app.py`). Ogni esecuzione (`run`) è isolata in una sua cartella per garantire riproducibilità.
+
 ```mermaid
 flowchart TD
-    A[config.yaml / .env] --> B[run_pipeline.py]
-    B --> C[Acquisizione e preprocessing]
-    C --> D[data/interim]
-    D --> E[data/processed]
-    E --> F[mobile/monitor_campi_flegrei.py]
-    F --> G[mobile/models / models/registry / mlruns]
-    E --> H[pages/alerts_dashboard.py]
-    G --> H
+    subgraph "1. Configurazione"
+        A[config.yaml / .env]
+    end
+
+    subgraph "2. Esecuzione"
+        B(Web UI: app.py)
+        C(CLI: run_pipeline.py)
+    end
+
+    A --> C
+    B -.-> C
+
+    subgraph "3. Pipeline di Elaborazione"
+        C --> P0[Fase 0: Filtro Spaziale] --> P1[Fase 1: Download Dati] --> P2[Fase 2: Calcolo Delta] --> P3[Fase 3: Georeferenziazione] --> P4[Fase 4: Creazione Mappe/GIS]
+        P4 --> P5[Opzionale: Analisi Mobile ML]
+    end
+
+    subgraph "4. Risultati"
+        P5 --> R[runs/{nome_run}/]
+    end
 ```
 
 ### Componenti principali
@@ -91,8 +105,44 @@ pytest
 
 ### Avvio dashboard
 
+L'interfaccia web è il modo più semplice per interagire con la pipeline.
+
 ```powershell
-streamlit run .\pages\alerts_dashboard.py
+streamlit run app.py
+```
+
+## Come Usare la Pipeline
+
+Ci sono due modi principali per eseguire il progetto.
+
+### 1. Tramite Interfaccia Web (Consigliato)
+
+L'interfaccia grafica basata su Streamlit è il metodo più intuitivo. Permette di configurare tutti i parametri, avviare la pipeline e visualizzare i risultati senza usare la riga di comando.
+
+```powershell
+streamlit run app.py
+```
+
+### 2. Tramite Riga di Comando
+
+Per automazione e scenari avanzati, puoi usare direttamente `run_pipeline.py`.
+
+**Esempio 1: Esecuzione base con dati di default**
+```powershell
+# Esegue le fasi di default usando i dati presenti nella cartella /examples
+python run_pipeline.py --run-name analisi_base --delta-csv examples/mobile_devices/scoperte_automatiche.csv.gz --stations-csv examples/mobile_devices/stations.csv
+```
+
+**Esempio 2: Download nuovi dati ed esecuzione completa**
+```powershell
+# Scarica i dati per un periodo specifico e poi esegue tutte le fasi di analisi
+python run_pipeline.py --run-name download_dati_giugno --run-download --download-start 2026-06-01 --download-end 2026-06-10
+```
+
+**Esempio 3: Esecuzione con analisi mobile (Machine Learning)**
+```powershell
+# Esegue la pipeline standard e, al termine, avvia la sub-pipeline di analisi mobile per addestrare/usare modelli ML
+python run_pipeline.py --run-name analisi_con_ml --mobile-analysis --mobile-min-stations 18
 ```
 
 ## Configurazione
@@ -106,49 +156,33 @@ streamlit run .\pages\alerts_dashboard.py
 
 ### Directory principali
 
-- `data/raw/`: input grezzi
-- `data/interim/`: output intermedi
-- `data/processed/`: output finali
-- `runs/`: run storiche
-- `mobile/models/`: modelli locali versionati
-- `models/registry/`: manifest di registry
-- `mlruns/`: tracking MLflow
-
-### Nota operativa
-
-La dashboard Streamlit legge i dati realmente prodotti dalla pipeline.  
-Se non esiste un dataset di alert dedicato, la vista allarmi va considerata informativa e non un sistema di alert operativo.
+- `data/`: input grezzi e stabili (es. catalogo stazioni principale).
+- `runs/`: contiene gli output di ogni singola esecuzione, garantendo isolamento e riproducibilità.
+- `mobile/models/`: modelli locali versionati.
+- `mlruns/`: tracking degli esperimenti di ML con MLflow.
 
 ## Flusso di Lavoro
 
-### Fase 0: Selezione spaziale
-`scripts/select_stations_spatial.py`
+La pipeline è suddivisa in fasi sequenziali, ognuna eseguita da uno script specializzato.
 
-### Fase 1: Acquisizione waveform
-`scripts/download_cf_waveforms.py`
+*   **Fase 0: Selezione Spaziale**
+    Filtra le stazioni sismiche all'interno di un'area geografica definita (es. un cerchio con raggio di 20km).
+*   **Fase 1: Acquisizione Dati**
+    Scarica le forme d'onda grezze (file MiniSEED) dai server FDSN (es. INGV) per le stazioni e il periodo temporale selezionati.
+*   **Fase 2: Calcolo Delta e Statistiche**
+    Processa i dati grezzi per calcolare i "delta temporali" (anticipi/ritardi) e aggrega le statistiche per ogni stazione.
+*   **Fase 3: Georeferenziazione**
+    Aggiunge le coordinate geografiche e metriche (UTM) ai dati elaborati, preparando il dataset per l'analisi spaziale.
+*   **Fase 4: Creazione Mappe e Output GIS**
+    Genera mappe di interpolazione, grafici e file standard GIS (GeoTIFF, Shapefile) per l'analisi in software come QGIS.
 
-### Fase 2: Calcolo delta e statistiche
-`scripts/compute_mseed_deltas.py`  
-`scripts/compute_station_stats.py`  
-`scripts/prepare_science_deltas.py`
+### Output
 
-### Fase 3: Associazione coordinate e spazializzazione
-`scripts/attach_coords_to_deltas.py`  
-`scripts/export_missing_stations.py`  
-`scripts/invert_station_locations.py`
+Gli output di ogni esecuzione vengono salvati in una cartella dedicata in `runs/{nome_run}/`. I file principali generati sono:
 
-### Fase 4: Analisi spaziale e mappe
-`scripts/analyze_delta_map.py`  
-`scripts/view_delta_maps.py`
-
-### Output canonici
-
-- `data/interim/scoperte_automatiche.csv`
-- `data/interim/station_deltas.csv`
-- `data/processed/deltas_spatial.csv`
-- `data/processed/station_stats.csv`
-- `data/processed/mappa_scoperte.csv`
-- `data/processed/stats_scoperte.csv`
+- `runs/{nome_run}/processed/deltas_spatial.csv`
+- `runs/{nome_run}/processed/station_stats.csv`
+- `runs/{nome_run}/maps/delta_interpolated.png`
 
 ## Analisi Mobile
 
@@ -157,7 +191,7 @@ Il modulo `mobile/` gestisce:
 - validazione dati
 - monitoring
 - alerting
-- training del modello rischio
+- training del modello di rischio
 - versioning locale e tracking MLflow
 
 ### Componenti principali
@@ -168,60 +202,14 @@ Il modulo `mobile/` gestisce:
 - `mobile/train_risk_model.py`
 - `mobile/model_versioning.py`
 
-### Output attesi
-
-- `mobile/models/random_forest/*`
-- `models/registry/*.json`
-- `mlruns/`
-- `mobile/alerts/alerts_log.csv`
-- `mobile/alerts/alerts_log.jsonl`
-
-## Orchestrazione ed Esecuzione
-
-### Esecuzione pipeline
-
-```powershell
-python run_pipeline.py
-```
-
-### Monitoring
-
-```powershell
-python -m mobile.monitor_campi_flegrei
-```
-
-### Training modello rischio
-
-```powershell
-python -m mobile.train_risk_model --force
-```
-
-### Dashboard
-
-```powershell
-streamlit run .\pages\alerts_dashboard.py
-```
-
 ## Interfaccia Web (Streamlit)
 
-L’interfaccia Streamlit consente di:
+L’interfaccia Streamlit (`app.py`) consente di:
 
-- visualizzare i dati di monitoraggio
-- ispezionare le statistiche di stazione
-- consultare la mappa spaziale
-- analizzare gli output disponibili
-- esportare i risultati disponibili
-
-### Avvio
-
-```powershell
-streamlit run .\pages\alerts_dashboard.py
-```
-
-### Nota
-
-La dashboard mostra i dati disponibili nei file prodotti dalla pipeline.  
-La sezione allarmi ha valore operativo solo se esiste un feed di alert dedicato.
+- Configurare ed eseguire la pipeline in modo visuale.
+- Visualizzare i dati di monitoraggio e i risultati delle esecuzioni.
+- Ispezionare le statistiche di stazione e le mappe generate.
+- Esportare i risultati di un'intera esecuzione in un file ZIP.
 
 ## Struttura del Progetto
 
@@ -230,9 +218,7 @@ Pipeline-Sismologica-Geospaziale/
 ├── app.py
 ├── config.yaml
 ├── data/
-│   ├── raw/
-│   ├── interim/
-│   └── processed/
+│   └── raw/
 ├── examples/
 │   └── mobile_devices/
 ├── mobile/
@@ -241,62 +227,51 @@ Pipeline-Sismologica-Geospaziale/
 │   ├── model_versioning.py
 │   ├── monitor_campi_flegrei.py
 │   └── train_risk_model.py
-├── models/
-│   └── registry/
 ├── pages/
-│   └── alerts_dashboard.py
+│   ├── alerts_dashboard.py
+│   └── mobile_analysis_viewer.py
 ├── runs/
 ├── scripts/
 ├── tests/
 ├── mlruns/
-├── path_utils.py
 ├── run_pipeline.py
 ├── requirements.txt
-├── requirements-test.txt
-├── pyproject.toml
 └── README.md
 ```
 
 ## Dataset ed Esempi
 
-La cartella `examples/mobile_devices/` contiene:
+La cartella `examples/mobile_devices/` contiene un dataset "legacy" utile per testare rapidamente la pipeline senza dover scaricare nuovi dati.
 
-- dataset dimostrativi
-- script di analisi storici
-- file di supporto per test e prototipi
+### `data/` vs `runs/`
 
-Questi file sono utili per esplorazione e validazione, ma non sostituiscono gli output canonici della pipeline in `data/processed/` e `runs/`.
+- **`data/`**: Contiene dati di input "stabili" e condivisi, come il catalogo principale delle stazioni. È la "libreria" di base del progetto.
+- **`runs/`**: Contiene gli output di ogni singola esecuzione. Ogni sottocartella è un "esperimento" archiviato, con i suoi dati, log e mappe, garantendo isolamento e riproducibilità.
 
 ## Obiettivi e Scope
 
 ### Obiettivi principali
 
-- automatizzare il processing sismologico su batch/runs
-- produrre output tabellari e mappe geospaziali riproducibili
-- supportare monitoraggio operativo con dashboard Streamlit
-- versionare e tracciare i modelli di rischio
+- Automatizzare il processing sismologico su batch/runs.
+- Produrre output tabellari e mappe geospaziali riproducibili.
+- Supportare monitoraggio operativo con dashboard Streamlit.
+- Versionare e tracciare i modelli di rischio.
 
 ### Fuori scope (attuale)
 
-- early warning real-time certificato
-- sostituzione di sistemi ufficiali di Protezione Civile
-- feed alert operativo garantito H24 senza infrastruttura dedicata
+- Early warning real-time certificato.
+- Sostituzione di sistemi ufficiali di Protezione Civile.
 
 ## Data Contract
 
 ### Input minimi
-
-- `data/raw/stations.csv`
-- waveform in `data/raw/waveforms/<STAZIONE>/*.mseed`
+La pipeline può operare con diversi tipi di input, ma i più comuni sono un file di stazioni (`stations.csv`) e dei dati di eventi (`events.csv` e `picks.csv`) o un file di delta pre-calcolati.
 
 ### Output canonici (pipeline)
-
-- `data/interim/station_deltas.csv`
-- `data/interim/scoperte_automatiche.csv`
-- `data/processed/deltas_spatial.csv`
-- `data/processed/station_stats.csv`
-- `data/processed/mappa_scoperte.csv`
-- `data/processed/stats_scoperte.csv`
+Ogni esecuzione produce una cartella in `runs/` contenente, tra gli altri:
+- `runs/{nome_run}/processed/deltas_spatial.csv`
+- `runs/{nome_run}/processed/station_stats.csv`
+- `runs/{nome_run}/maps/*.png`
 
 ### Output monitor/alert
 
@@ -309,22 +284,22 @@ Questi file sono utili per esplorazione e validazione, ma non sostituiscono gli 
 
 ### Versionamento
 
-- artefatti modello locali: `mobile/models/random_forest/*`
-- manifest registry: `models/registry/*.json`
-- tracking esperimenti: `mlruns/`
+- Artefatti modello locali: `mobile/models/`
+- Manifest registry: `models/registry/*.json`
+- Tracking esperimenti: `mlruns/` (MLflow)
 
 ### Regole operative
 
-- ogni training produce metadata e metriche salvate
-- il modello “corrente” deve essere identificabile in modo univoco
-- rollback consentito selezionando una versione precedente valida
+- Ogni training produce metadata e metriche salvate.
+- Il modello “corrente” deve essere identificabile in modo univoco.
+- Il rollback è consentito selezionando una versione precedente valida.
 
 ## Qualità e Testing
 
 ### Suite test
 
-- unit/integration: cartella `tests/`
-- coverage HTML: `htmlcov/`
+- Unit/integration: cartella `tests/`
+- Coverage HTML: `htmlcov/`
 
 ### Comandi
 
@@ -333,38 +308,28 @@ pytest
 pytest --maxfail=1 -q
 ```
 
-### Criteri minimi consigliati
-
-- test verdi su branch locale prima del merge
-- nessun conflitto git aperto
-- coerenza tra `requirements*.txt`, `pyproject.toml` e codice
-
 ## Runbook Operativo e Troubleshooting
 
 ### Esecuzione standard
+Il modo più semplice per iniziare è lanciare l'interfaccia web.
 
 ```powershell
-python run_pipeline.py
-python -m mobile.monitor_campi_flegrei
-streamlit run .\pages\alerts_dashboard.py
+streamlit run app.py
 ```
 
 ### Problemi frequenti
 
 1. **Dashboard vuota o timeline incoerente**
-   - verificare presenza di file in `runs/` e/o `data/processed/`
-   - verificare colonne disponibili nei CSV caricati
+   - Verificare che sia stata completata almeno un'esecuzione e che la cartella `runs/{nome_run}` contenga dei file.
+   - Verificare le colonne disponibili nei CSV caricati.
 2. **Conflitti git dopo pull**
-   - risolvere file in stato `unmerged`, poi `git add` e `git commit`
-3. **Divergenza branch locale/remoto**
-   - `git pull` e risoluzione conflitti prima di nuovi commit
+   - Risolvere file in stato `unmerged`, poi `git add` e `git commit`.
 
 ## Sicurezza e Configurazione Sensibile
 
-- non committare credenziali in chiaro
-- usare `.env` locale e mantenere `.env.example` come template
-- escludere artefatti sensibili/temporanei tramite `.gitignore`
-- verificare i file di compose/config prima della pubblicazione
+- Non committare credenziali in chiaro.
+- Usare `.env` locale e mantenere `.env.example` come template.
+- Escludere artefatti sensibili/temporanei tramite `.gitignore`.
 
 ## Sviluppo
 

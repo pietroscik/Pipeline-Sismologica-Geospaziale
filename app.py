@@ -92,6 +92,51 @@ with st.sidebar:
 
     run_name = st.text_input("Nome Esecuzione (Run Name)", value="analisi_web_01")
 
+    # --- SEZIONI RIORGANIZZATE PER ORDINE LOGICO ---
+
+    st.subheader("📍 Filtro Spaziale (Fase 0)")
+
+    use_spatial_filter = st.checkbox("Applica Filtro Spaziale", value=True)
+
+    if use_spatial_filter:
+
+        lat = st.number_input("Latitudine (Punto Focale)", value=40.82, format="%.4f")
+
+        lon = st.number_input("Longitudine (Punto Focale)", value=14.14, format="%.4f")
+
+        radius = st.number_input("Raggio (km)", value=20.0, format="%.1f")
+
+    st.subheader("📡 Acquisizione (Fase 1)")
+
+    run_download = st.checkbox(
+        "Scarica Tracce (MiniSEED)",
+        value=False,
+        help="Scarica le forme d'onda dal server FDSN per le stazioni selezionate.",
+    )
+
+    if run_download:
+
+        st.warning(
+            "⚠️ Il download di lunghi periodi richiede svariati GB. Seleziona una finestra temporale breve (es. pochi giorni)."
+        )
+
+        dl_start = st.date_input(
+            "Data Inizio", value=pd.to_datetime("today") - pd.Timedelta(3, unit="D")
+        )
+
+        dl_end = st.date_input("Data Fine", value=pd.to_datetime("today"))
+
+    st.subheader("⚙️ Controllo Fasi Pipeline")
+
+    start_phase = st.select_slider(
+        "Fase di partenza",
+        options=[0, 1, 2, 3, 4],
+        value=0,
+        help="Seleziona da quale fase iniziare l'esecuzione (0=Selezione Spaziale, 1=Acquisizione, 2=Delta, 3=Spazializzazione, 4=GIS)",
+    )
+
+    # --- FINE SEZIONI RIORGANIZZATE ---
+
     st.subheader("📁 File di Input")
 
     use_existing_files = st.radio(
@@ -130,10 +175,21 @@ with st.sidebar:
             help="Catalogo stazioni usato dalla pipeline e dall'esempio legacy integrato.",
         )
 
+        # Logica per disabilitare il campo delta se il download è attivo
+        disable_delta_input = run_download
+        if disable_delta_input:
+            st.warning(
+                "Il download è attivo, quindi qualsiasi Delta CSV pre-esistente verrà ignorato per processare i nuovi dati."
+            )
+            delta_csv_value = ""
+        else:
+            delta_csv_value = str(delta_csv)
+
         delta_csv = st.text_input(
             "Percorso Delta CSV (opzionale)",
-            value=str(delta_csv),
+            value=delta_csv_value,
             help="CSV gzip già pronto con i delta. Con il dataset di esempio la pipeline parte subito.",
+            disabled=disable_delta_input,
         )
 
     else:
@@ -179,47 +235,6 @@ with st.sidebar:
             picks_csv = save_uploaded_file(uploaded_picks)
             stations_csv = save_uploaded_file(uploaded_stations)
             delta_csv = save_uploaded_file(uploaded_delta)
-
-    st.subheader("📍 Filtro Spaziale (Fase 0)")
-
-    use_spatial_filter = st.checkbox("Applica Filtro Spaziale", value=True)
-
-    if use_spatial_filter:
-
-        lat = st.number_input("Latitudine (Punto Focale)", value=40.82, format="%.4f")
-
-        lon = st.number_input("Longitudine (Punto Focale)", value=14.14, format="%.4f")
-
-        radius = st.number_input("Raggio (km)", value=20.0, format="%.1f")
-
-    st.subheader("📡 Acquisizione (Fase 1)")
-
-    run_download = st.checkbox(
-        "Scarica Tracce (MiniSEED)",
-        value=False,
-        help="Scarica le forme d'onda dal server FDSN per le stazioni selezionate.",
-    )
-
-    if run_download:
-
-        st.warning(
-            "⚠️ Il download di lunghi periodi richiede svariati GB. Seleziona una finestra temporale breve (es. pochi giorni)."
-        )
-
-        dl_start = st.date_input(
-            "Data Inizio", value=pd.to_datetime("today") - pd.Timedelta(3, unit="D")
-        )
-
-        dl_end = st.date_input("Data Fine", value=pd.to_datetime("today"))
-
-    st.subheader("⚙️ Controllo Fasi Pipeline")
-
-    start_phase = st.select_slider(
-        "Fase di partenza",
-        options=[0, 1, 2, 3, 4],
-        value=0,
-        help="Seleziona da quale fase iniziare l'esecuzione (0=Selezione Spaziale, 1=Acquisizione, 2=Delta, 3=Spazializzazione, 4=GIS)",
-    )
 
     st.markdown("**Salta fasi specifiche:**")
 
@@ -498,20 +513,38 @@ if (
 st.header("🗺️ Mappa Interattiva delle Stazioni")
 
 runs_root = PROJECT_ROOT / "runs"
+available_runs = list_available_runs(runs_root)
 
-if consult_mode == "Merge tutte le esecuzioni":
-    df_spatial = load_spatial_data_from_runs(runs_root, available_runs) if available_runs else pd.DataFrame()
+# Definiamo i widget per selezionare la modalità di visualizzazione
+if available_runs:
+    consult_mode = st.radio(
+        "Modalità di visualizzazione",
+        ["Visualizza una singola esecuzione", "Merge tutte le esecuzioni"],
+        horizontal=True,
+        key="consult_mode_radio",
+    )
+
+    selected_run_for_view = None
+    if consult_mode == "Visualizza una singola esecuzione":
+        selected_run_for_view = st.selectbox(
+            "Seleziona una run da visualizzare", options=available_runs, key="run_selector"
+        )
 else:
-    spatial_csv = (
-        runs_root / selected_run_for_view / "processed" / "deltas_spatial.csv"
-        if selected_run_for_view
-        else None
-    )
-    df_spatial = (
-        load_spatial_data(str(spatial_csv), spatial_csv.stat().st_mtime)
-        if spatial_csv is not None and spatial_csv.exists()
-        else pd.DataFrame()
-    )
+    # Se non ci sono run, impostiamo valori di default per evitare errori
+    consult_mode = "Visualizza una singola esecuzione"
+    selected_run_for_view = None
+    st.info("Nessuna esecuzione ('run') trovata nella cartella `runs/`. Esegui una pipeline per vedere i risultati.")
+
+# Carichiamo i dati in base alla modalità scelta
+df_spatial = pd.DataFrame()
+if consult_mode == "Merge tutte le esecuzioni":
+    if available_runs:
+        df_spatial = load_spatial_data_from_runs(runs_root, available_runs)
+elif selected_run_for_view:
+    spatial_csv = runs_root / selected_run_for_view / "processed" / "deltas_spatial.csv"
+    if spatial_csv.exists():
+        df_spatial = load_spatial_data(str(spatial_csv), spatial_csv.stat().st_mtime)
+
 
 if (
     not df_spatial.empty

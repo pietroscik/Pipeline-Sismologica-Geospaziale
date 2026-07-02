@@ -688,8 +688,58 @@ Esempi di uso:
 
         if args.start_phase <= 2 and not args.skip_phase2:
 
-            if delta_csv:
+            # LOGICA DI PRIORITÀ: Se abbiamo scaricato nuovi dati, dobbiamo elaborarli.
+            # Ignoriamo qualsiasi --delta-csv fornito per coerenza.
+            if args.run_download:
+                logger.info("[Fase 2 - Step 1] Elaborazione MiniSEED appena scaricati...")
+                out_station_deltas = data_interim_dir / "station_deltas_from_mseed.csv"
+                created_files.append(out_station_deltas)
 
+                waveforms_dir = run_dir / "waveforms"
+                if not waveforms_dir.exists() or not any(waveforms_dir.iterdir()):
+                    raise FileNotFoundError(f"La cartella dei MiniSEED non esiste o è vuota: {waveforms_dir}")
+
+                cmd_compute_mseed = [
+                    python_exe,
+                    scripts_dir / "compute_mseed_deltas.py",
+                    "--mseed-dir",
+                    str(waveforms_dir),
+                    "--output-csv",
+                    str(out_station_deltas),
+                ]
+                run_cmd(cmd_compute_mseed, timeout=args.timeout * 2)
+
+                # Avvisa l'utente se un delta-csv è stato ignorato
+                if args.delta_csv:
+                    logger.warning(
+                        f"Opzione --delta-csv ({Path(args.delta_csv).name}) ignorata perché --run-download è attivo."
+                    )
+
+            # NUOVA LOGICA: Se non stiamo scaricando, controlliamo se esistono già dei MiniSEED da elaborare.
+            elif (run_dir / "waveforms").exists() and any((run_dir / "waveforms").iterdir()):
+                logger.info("[Fase 2 - Step 1] Rilevati MiniSEED pre-esistenti. Avvio elaborazione...")
+                out_station_deltas = data_interim_dir / "station_deltas_from_mseed.csv"
+                created_files.append(out_station_deltas)
+
+                waveforms_dir = run_dir / "waveforms"
+                cmd_compute_mseed = [
+                    python_exe,
+                    scripts_dir / "compute_mseed_deltas.py",
+                    "--mseed-dir",
+                    str(waveforms_dir),
+                    "--output-csv",
+                    str(out_station_deltas),
+                ]
+                run_cmd(cmd_compute_mseed, timeout=args.timeout * 2)
+
+                # Avvisa l'utente se un delta-csv è stato ignorato
+                if args.delta_csv:
+                    logger.warning(
+                        f"Opzione --delta-csv ({Path(args.delta_csv).name}) ignorata perché sono stati trovati MiniSEED da rielaborare."
+                    )
+
+            # Se non abbiamo scaricato dati, usiamo la logica pre-esistente.
+            elif delta_csv:
                 logger.info(f"[Fase 2] Utilizzo file delta pre-esistente: {delta_csv}")
 
                 out_station_deltas = delta_csv
@@ -934,7 +984,7 @@ Esempi di uso:
 
                 # run_cmd gestisce già la conversione a stringa e il logging
                 try:
-                    run_cmd(cmd_mobile, optional=True, timeout=args.timeout * 3)
+                    run_cmd(cmd_mobile, optional=False, timeout=args.timeout * 3)
                     logger.info("✅ Analisi mobile completata!")
                     logger.info(f"   Risultati in: {mobile_output_dir}")
                 except Exception as e:
