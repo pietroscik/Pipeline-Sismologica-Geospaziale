@@ -1,42 +1,36 @@
-email_enabled: false
+# Override ambiente development
+
+email_enabled: true
+webhook_enabled: false
+sms_enabled: false
+telegram_enabled: false
+
+thresholds:
+  low: 0.25
+  medium: 0.50
+  high: 0.75
+  critical: 0.90
+
+alert_cooldown_minutes: 15
+
 email_smtp: "smtp.gmail.com"
 email_port: 587
 email_user: ""
 email_password: ""
-email_from: ""
 email_to: []
 
-webhook_enabled: true
 webhook_url: ""
+webhook_timeout_seconds: 10
 
-sms_enabled: false
-sms_provider: "twilio"
 sms_account_sid: ""
 sms_auth_token: ""
 sms_from: ""
 sms_to: []
 
-alert_thresholds:
-  low: 0.3
-  medium: 0.5
-  high: 0.7
-  critical: 0.85
+telegram_bot_token: ""
+telegram_chat_id: ""
 
-model_config:
-  type: "xgboost"
-  class_weight: "balanced"
-  early_stopping_rounds: 5
-  eval_metric: "aucpr"
-  cv_folds: 3
-
-campi_flegrei:
-  min_stations_alert: 5
-  coincidence_window: 10.0
-  center_lat: 40.8062
-  center_lon: 14.1410
-  max_distance_km: 100.0
-
-# Development-specific settings
-log_level: DEBUG
+encryption_key: ""
+log_level: "DEBUG"
 max_retries: 5
 timeout_seconds: 30

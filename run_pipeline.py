@@ -11,13 +11,6 @@ from pathlib import Path
 from typing import List, Optional
 from scripts.utils import load_csv_with_checks, setup_logger, load_config
 
-# quick early-help so subprocess python run_pipeline.py --help returns a predictable header
-if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
-    # short message must include "Pipeline" to satisfy integration test expectations
-    print("Pipeline Analisi Dati Sismici Geospaziale - run_pipeline help\n")
-    print("Use --help for full options.")
-    sys.exit(0)
-
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -345,10 +338,17 @@ def setup_run_directory(run_dir: Path) -> tuple:
 
 
 def main() -> None:
+    # Gestione "early-help" per un output più pulito
+    if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
+        # short message must include "Pipeline" to satisfy integration test expectations
+        print("Pipeline Analisi Dati Sismici Geospaziale - run_pipeline help\n")
+        # L'epilogo del parser verrà stampato dopo questo messaggio
 
     parser = argparse.ArgumentParser(
         description="Orchestratore Pipeline Sismologica Geospaziale",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        # Disabilitiamo l'help automatico per gestire il nostro "early-help"
+        add_help=False,
         epilog="""
 
 Esempi di uso:
@@ -392,6 +392,14 @@ Esempi di uso:
     --mobile-alert-threshold 0.7
 
 """,
+    )
+
+    # Aggiungiamo manualmente l'argomento --help
+    parser.add_argument(
+        "-h", "--help",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="Mostra questo messaggio di aiuto ed esci."
     )
 
     parser.add_argument(
@@ -601,30 +609,20 @@ Esempi di uso:
         if args.start_phase <= 0 and not args.skip_phase0:
 
             logger.info("[Fase 0] Selezione stazioni spaziale...")
-
-            if stations_csv is None:
-
+            if not stations_csv:
                 logger.warning(
                     "Attenzione: --stations-csv non specificato. Fase 0 saltata."
                 )
-
             else:
-
                 # Validate stations CSV
-
                 try:
-
                     validate_csv_file(
                         stations_csv,
                         required_columns={"station", "latitude", "longitude"},
                     )
-
                     logger.info(f"File stazioni validato: {stations_csv.name}")
-
                 except Exception as e:
-
                     logger.error(f"Validazione file stazioni fallita: {e}")
-
                     raise
 
                 run_cmd(
@@ -632,7 +630,7 @@ Esempi di uso:
                         python_exe,
                         scripts_dir / "select_stations_spatial.py",
                         "--input-csv",
-                        str(stations_csv),
+                        stations_csv,
                         "--output-file",
                         str(selected_stations_txt),
                         "--point",
@@ -674,7 +672,7 @@ Esempi di uso:
 
                 if selected_stations_txt.exists():
 
-                    cmd_download.extend(["--stations-file", str(selected_stations_txt)])
+                    cmd_download.extend(["--stations-file", selected_stations_txt])
 
                 run_cmd(cmd_download, timeout=args.timeout * 4)  # Download can be long
 
@@ -695,11 +693,8 @@ Esempi di uso:
                 logger.info(f"[Fase 2] Utilizzo file delta pre-esistente: {delta_csv}")
 
                 out_station_deltas = delta_csv
-
                 if not out_station_deltas.exists():
-
                     logger.error(f"File delta non trovato: {out_station_deltas}")
-
                     raise FileNotFoundError(
                         f"Delta CSV file not found: {out_station_deltas}"
                     )
@@ -712,41 +707,32 @@ Esempi di uso:
 
                 created_files.append(out_station_deltas)
 
-                if events_csv is None or picks_csv is None:
-
+                if not all([events_csv, picks_csv]):
                     logger.error(
                         "Per Fase 2 servono --events-csv e --picks-csv o --delta-csv."
                     )
-
                     raise ValueError(
                         "Events CSV and Picks CSV are required for Phase 2"
                     )
 
                 # Validate input CSV files
-
                 try:
-
                     validate_csv_file(events_csv, required_columns={"event_id", "time"})
-
                     validate_csv_file(
                         picks_csv, required_columns={"pick_id", "event_id", "phase"}
                     )
-
                     logger.info(f"File eventi e picks validati")
-
                 except Exception as e:
-
                     logger.error(f"Validazione input Fase 2 fallita: {e}")
-
                     raise
 
                 cmd_step1 = [
                     python_exe,
                     scripts_dir / "prepare_science_deltas.py",
                     "--events-csv",
-                    str(events_csv),
+                    events_csv,
                     "--picks-csv",
-                    str(picks_csv),
+                    picks_csv,
                     "--output-csv",
                     str(out_station_deltas),
                 ]
@@ -755,7 +741,7 @@ Esempi di uso:
 
                     logger.info("  -> Applico filtro spaziale stazioni")
 
-                    cmd_step1.extend(["--stations-file", str(selected_stations_txt)])
+                    cmd_step1.extend(["--stations-file", selected_stations_txt])
 
                 run_cmd(cmd_step1, timeout=args.timeout)
 
@@ -769,14 +755,14 @@ Esempi di uso:
                 python_exe,
                 scripts_dir / "compute_station_stats.py",
                 "--base-csv",
-                str(out_station_deltas),
+                out_station_deltas,
                 "--output-csv",
                 str(out_station_stats),
             ]
 
             if selected_stations_txt.exists():
 
-                cmd_stats.extend(["--stations-file", str(selected_stations_txt)])
+                cmd_stats.extend(["--stations-file", selected_stations_txt])
 
             run_cmd(cmd_stats, timeout=args.timeout)
 
@@ -791,21 +777,14 @@ Esempi di uso:
                 out_station_stats = data_processed_dir / "station_stats.csv"
 
                 logger.info(f"[Saltata Fase 2] Utilizzo delta: {delta_csv}")
-
                 # Validate delta CSV
-
                 try:
-
                     validate_csv_file(
                         delta_csv, required_columns={"station", "delta_seconds"}
                     )
-
                     logger.info(f"File delta validato: {delta_csv.name}")
-
                 except Exception as e:
-
                     logger.error(f"Validazione file delta fallita: {e}")
-
                     raise
 
             else:
@@ -824,26 +803,18 @@ Esempi di uso:
 
             created_files.append(out_deltas_spatial)
 
-            if stations_csv is None:
-
+            if not stations_csv:
                 logger.error("Per Fase 3 serve --stations-csv.")
-
                 raise ValueError("--stations-csv is required for Phase 3")
 
             # Validate stations CSV has required columns
-
             try:
-
                 validate_csv_file(
                     stations_csv, required_columns={"station", "latitude", "longitude"}
                 )
-
                 logger.info(f"File stazioni validato per Fase 3")
-
             except Exception as e:
-
                 logger.error(f"Validazione stazioni Fase 3 fallita: {e}")
-
                 raise
 
             run_cmd(
@@ -851,9 +822,9 @@ Esempi di uso:
                     python_exe,
                     scripts_dir / "attach_coords_to_deltas.py",
                     "--delta-csv",
-                    str(out_station_stats),
+                    out_station_stats,
                     "--stations-csv",
-                    str(stations_csv),
+                    stations_csv,
                     "--output-csv",
                     str(out_deltas_spatial),
                     "--value-column",
@@ -869,7 +840,6 @@ Esempi di uso:
             if delta_csv:
 
                 out_deltas_spatial = data_processed_dir / "deltas_spatial.csv"
-
                 if not out_deltas_spatial.exists():
 
                     logger.warning(
@@ -881,17 +851,13 @@ Esempi di uso:
         if args.start_phase <= 4 and not args.skip_phase4:
 
             logger.info("[Fase 4] Generazione output GIS...")
-
-            if out_deltas_spatial is None or not out_deltas_spatial.exists():
-
+            if not (out_deltas_spatial and out_deltas_spatial.exists()):
                 logger.error(f"File delta spaziale mancante: {out_deltas_spatial}")
-
                 raise FileNotFoundError(
                     f"Spatial delta file missing: {out_deltas_spatial}"
                 )
 
-            if out_station_stats is None or not out_station_stats.exists():
-
+            if not (out_station_stats and out_station_stats.exists()):
                 out_station_stats = data_processed_dir / "station_stats.csv"
 
                 if not out_station_stats.exists():
@@ -905,9 +871,9 @@ Esempi di uso:
                     python_exe,
                     scripts_dir / "analyze_delta_map.py",
                     "--delta-csv",
-                    str(out_deltas_spatial),
+                    out_deltas_spatial,
                     "--stats-csv",
-                    str(out_station_stats),
+                    out_station_stats,
                     "--outdir",
                     str(maps_dir),
                     "--export-geotiff",
@@ -935,11 +901,8 @@ Esempi di uso:
             # Costruisci comando per mobile_analysis_pipeline.py
 
             mobile_script = PROJECT_ROOT / "mobile" / "mobile_analysis_pipeline.py"
-
             if not mobile_script.exists():
-
                 logger.error(f"Script mobile non trovato: {mobile_script}")
-
                 logger.error("Assicurati che mobile/mobile_analysis_pipeline.py esista")
 
             else:
@@ -950,17 +913,11 @@ Esempi di uso:
                     python_exe,
                     str(mobile_script),
                     "--input-csv",
-                    (
-                        str(out_deltas_spatial)
-                        if out_deltas_spatial
-                        else str(data_processed_dir / "deltas_spatial.csv")
-                    ),
+                    out_deltas_spatial
+                    or data_processed_dir / "deltas_spatial.csv",
                     "--stations-csv",
-                    (
-                        str(stations_csv)
-                        if stations_csv
-                        else str(data_raw_dir / "stations.csv")
-                    ),
+                    stations_csv
+                    or data_raw_dir / "stations.csv",
                     "--output-dir",
                     str(mobile_output_dir),
                     "--min-stations",
@@ -975,18 +932,12 @@ Esempi di uso:
 
                     cmd_mobile.append("--generate-alerts")
 
-                logger.info(f"Esecuzione: {' '.join(cmd_mobile)}")
-
+                # run_cmd gestisce già la conversione a stringa e il logging
                 try:
-
                     run_cmd(cmd_mobile, optional=True, timeout=args.timeout * 3)
-
                     logger.info("✅ Analisi mobile completata!")
-
                     logger.info(f"   Risultati in: {mobile_output_dir}")
-
                 except Exception as e:
-
                     logger.error(f"❌ Analisi mobile fallita: {e}")
 
         logger.info("=" * 60)

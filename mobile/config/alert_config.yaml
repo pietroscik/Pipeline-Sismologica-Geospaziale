@@ -1,36 +1,40 @@
+# Config base (fallback)
+
 email_enabled: false
+webhook_enabled: false
+sms_enabled: false
+telegram_enabled: false
+
+# Soglie rischio allineate a config.yaml
+thresholds:
+  low: 0.30
+  medium: 0.60
+  high: 0.80
+  critical: 0.95
+
+# Cooldown minuti
+alert_cooldown_minutes: 60
+
+# Email (placeholder, senza credenziali reali)
 email_smtp: "smtp.gmail.com"
 email_port: 587
 email_user: ""
 email_password: ""
 email_to: []
 
-webhook_enabled: true
+# Webhook
 webhook_url: ""
+webhook_timeout_seconds: 10
 
-sms_enabled: false
-sms_provider: "twilio"
+# SMS (Twilio)
 sms_account_sid: ""
 sms_auth_token: ""
 sms_from: ""
 sms_to: []
 
-alert_thresholds:
-  low: 0.5
-  medium: 0.7
-  high: 0.9
-  critical: 0.95
+# Telegram
+telegram_bot_token: ""
+telegram_chat_id: ""
 
-model_config:
-  type: "xgboost"
-  class_weight: "balanced"
-  early_stopping_rounds: 10
-  eval_metric: "aucpr"
-  cv_folds: 5
-
-campi_flegrei:
-  min_stations_alert: 15
-  coincidence_window: 5.0
-  center_lat: 40.8062
-  center_lon: 14.1410
-  max_distance_km: 50.0
+# Cifratura opzionale (meglio via ENV ENCRYPTION_KEY)
+encryption_key: ""

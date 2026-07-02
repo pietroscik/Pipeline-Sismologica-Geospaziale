@@ -148,24 +148,21 @@ def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> flo
     return (degrees(atan2(y, x)) + 360) % 360
 
 
-def calculate_mean_direction(bearings: List[float]) -> float:
-    """Calculate circular mean of bearings in degrees.
-
-    Args:
-        bearings: List of bearing angles in degrees (0-360)
-
-    Returns:
-        Mean bearing angle in degrees (0-360)
-    """
-    if not bearings:
+def calculate_mean_direction(bearings):
+    if bearings is None or len(bearings) == 0:
         return 0.0
 
-    from math import atan2, cos, degrees, radians, sin
+    angles = np.deg2rad(np.asarray(bearings, dtype=float) % 360.0)
+    s = np.mean(np.sin(angles))
+    c = np.mean(np.cos(angles))
 
-    sin_sum = sum(sin(radians(b)) for b in bearings)
-    cos_sum = sum(cos(radians(b)) for b in bearings)
-    mean_bearing = degrees(atan2(sin_sum, cos_sum))
-    return (mean_bearing + 360) % 360
+    # Caso simmetrico (es. [0,90,180,270]): media circolare indeterminata
+    # Per i test e uso operativo restituiamo 0.0
+    if np.hypot(s, c) < 1e-12:
+        return 0.0
+
+    mean = np.degrees(np.arctan2(s, c))
+    return (mean + 360.0) % 360.0
 
 
 def validate_data(

@@ -1,6 +1,6 @@
 # Ambienti virtuali Python
 venv/
-.env/
+.env
 .venv/
 
 # File temporanei e cache di Python
@@ -11,6 +11,7 @@ __pycache__/
 *.tmp.driveupload/
 *.pytest_cache/
 htmlcov/
+.coverage
 
 
 # Cartelle Dati (non caricare mai dati sensibili o enormi su Git)

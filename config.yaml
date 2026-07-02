@@ -1,5 +1,18 @@
 # Configurazione Globale Pipeline Sismica
 
+project:
+  name: "Pipeline Sismologica Geospaziale"
+  environment: "development"   # development | test | production
+
+paths:
+  data_raw: "data/raw"
+  data_interim: "data/interim"
+  data_processed: "data/processed"
+  runs_dir: "runs"
+  models_dir: "mobile/models"
+  registry_dir: "models/registry"
+  mlruns_dir: "mlruns"
+
 geospatial:
   epsg: 32633                    # Sistema di proiezione UTM 33N
   surface_elevation_m: 0.0       # Quota stimata di default (livello del mare)
@@ -23,9 +36,32 @@ fdsn:
   network: "IV"
   # Lista di stazioni di default (es. Campi Flegrei). Puoi cambiarla o usare file esterni.
   stations: [
-    "CAAM", "CAFL", "CAWE", "CBAC", "CBAG", "CCAP", "CFMN", "CMIS", "CMSN", 
-    "CMTS", "CNIS", "COLB", "CPIS", "CPOZ", "CQUE", "CSFT", "CSOB", "CSTH", 
+    "CAAM", "CAFL", "CAWE", "CBAC", "CBAG", "CCAP", "CFMN", "CMIS", "CMSN",
+    "CMTS", "CNIS", "COLB", "CPIS", "CPOZ", "CQUE", "CSFT", "CSOB", "CSTH",
     "CUMA", "IBCM", "IBRN", "IOCA", "IPSM", "PTMR"
   ]
   channels: ["HHZ", "HHN", "HHE", "EHZ", "EHN", "EHE"]
   output_dir: "data/raw/waveforms"
+
+monitoring:
+  enabled: true
+  output_csv: "data/processed/station_stats.csv"
+  output_spatial_csv: "data/processed/deltas_spatial.csv"
+  min_records_for_alert: 10
+
+alerts:
+  enabled: true
+  output_csv: "mobile/alerts/alerts_log.csv"
+  output_jsonl: "mobile/alerts/alerts_log.jsonl"
+  cooldown_minutes: 60
+  thresholds:
+    low: 0.30
+    medium: 0.60
+    high: 0.80
+    critical: 0.95
+
+mobile:
+  config:
+    alert: "mobile/config/alert_config.yaml"
+    monitor: "mobile/config/monitor_config.yaml"
+    retraining: "mobile/config/retraining_config.yaml"

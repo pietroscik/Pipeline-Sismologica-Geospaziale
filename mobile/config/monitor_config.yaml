@@ -76,7 +76,7 @@ alert:
 execution:
   dry_run: false            # Modalita test (nessun allarme invio)
   daemon: false             # Modalita daemon (auto-restart su errore)
-  max_retries: 3            # Massimi tentativi prima di arendersi
+  max_retries: 3            # Massimi tentativi prima di arrendersi
   retry_delay_seconds: 60  # Attesa tra tentativi
 
 # ============================================

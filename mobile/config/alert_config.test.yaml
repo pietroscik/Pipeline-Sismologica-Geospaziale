@@ -8,6 +8,7 @@ email_to: ["test@example.com"]
 
 webhook_enabled: false
 webhook_url: ""
+webhook_timeout_seconds: 5
 
 sms_enabled: false
 sms_provider: "twilio"
@@ -15,6 +16,16 @@ sms_account_sid: "test_sid"
 sms_auth_token: "test_token"
 sms_from: "+1234567890"
 sms_to: ["+1234567890"]
+
+telegram_enabled: false
+telegram_bot_token: ""
+telegram_chat_id: ""
+
+encryption_key: ""
+log_level: "DEBUG"
+max_retries: 1
+timeout_seconds: 5
+mock_mode: true
 
 alert_thresholds:
   low: 0.1
@@ -36,8 +47,17 @@ campi_flegrei:
   center_lon: 14.1410
   max_distance_km: 200.0
 
-# Test-specific settings
-log_level: DEBUG
-max_retries: 1
-timeout_seconds: 5
-mock_mode: true
+# Override ambiente test
+
+email_enabled: false
+webhook_enabled: false
+sms_enabled: false
+telegram_enabled: false
+
+thresholds:
+  low: 0.30
+  medium: 0.60
+  high: 0.80
+  critical: 0.95
+
+alert_cooldown_minutes: 0

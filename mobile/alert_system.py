@@ -48,61 +48,51 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import requests
 import yaml
+import requests
 from cryptography.fernet import Fernet
 
-from scripts.utils import setup_logger  # noqa: E402
+# opzionale per test SMS (i test spesso patchano questo simbolo)
+try:
+    from twilio.rest import Client  # type: ignore
+except Exception:
+    Client = None  # noqa: N816
 
 try:
-    from twilio.rest import Client
-except ImportError:
-    Client = None
+    from path_utils import get_project_root
+    PROJECT_ROOT = Path(get_project_root())
+except Exception:
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-logger = setup_logger("alert_system")
+logger = logging.getLogger("alert_system")
 
-# Project root used by tests and config loading
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CONFIG_DIR = PROJECT_ROOT / "mobile" / "config"
+ALERTS_DIR = PROJECT_ROOT / "mobile" / "alerts"
+ALERTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Environment defaults used when no YAML config is present
-ENV_DEFAULTS = {
-    "production": {
-        "email_enabled": True,
-        "sms_enabled": False,
-        "webhook_enabled": False,
-        "email_from": "alerts@example.com",
-        "email_smtp": {"host": "smtp.example.com", "port": 587},
-        "webhook_url": "",
-        "encryption_key": None,
-    },
-    "development": {
-        "email_enabled": False,
-        "sms_enabled": False,
-        "webhook_enabled": False,
-        "email_from": "",
-        "email_smtp": {},
-        "webhook_url": "",
-        "encryption_key": None,
-    },
+ALERTS_LOG_CSV = ALERTS_DIR / "alerts_log.csv"
+ALERTS_LOG_JSONL = ALERTS_DIR / "alerts_log.jsonl"
+
+ENV_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "dev": {},
+    "development": {},
+    "test": {},
+    "prod": {},
+    "production": {},
 }
 
+def _derive_fernet_key(secret: str) -> bytes:
+    """Derive a valid Fernet key from any string."""
+    if not isinstance(secret, str) or not secret.strip():
+        raise ValueError("Invalid encryption key")
+    digest = hashlib.sha256(secret.encode("utf-8")).digest()  # 32 bytes
+    return base64.urlsafe_b64encode(digest)
 
-def _derive_fernet_key(raw_key: str) -> bytes:
-    """
-    Normalize an encryption key to a valid Fernet key:
-    - if raw_key already decodes as a valid urlsafe base64 key, return it
-    - otherwise derive a 32-byte key via SHA256 and return its urlsafe_b64encoded form
-    """
-    if not raw_key:
-        raise ValueError("Missing encryption key")
-    kb = raw_key.encode()
-    try:
-        base64.urlsafe_b64decode(kb)
-        return kb
-    except Exception:
-        digest = hashlib.sha256(kb).digest()
-        return base64.urlsafe_b64encode(digest)
-
+def _env_bool(name: str) -> Optional[bool]:
+    v = os.getenv(name)
+    if v is None:
+        return None
+    return str(v).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 class AlertSystem:
     """
@@ -197,12 +187,7 @@ class AlertSystem:
         "telegram": ["telegram_bot_token", "telegram_chat_id"],
     }
 
-    def __init__(
-        self,
-        config_path: Optional[str] = None,
-        config: Optional[Dict[str, Any]] = None,
-        env: Optional[str] = None,
-    ):
+    def __init__(self, config_path: Optional[str] = None, config: Optional[Dict[str, Any]] = None, env: Optional[str] = None):
         """
         Initialize AlertSystem.
         - config (dict) has highest precedence (used directly if provided)
@@ -217,241 +202,93 @@ class AlertSystem:
             or "development"
         )
 
-        loaded_cfg: Dict[str, Any] = {}
+        # IMPORTANTE: calcolare da PROJECT_ROOT runtime (compatibile con patch nei test)
+        self.config_dir = PROJECT_ROOT / "mobile" / "config"
+        self.alerts_dir = PROJECT_ROOT / "mobile" / "alerts"
+        self.alerts_dir.mkdir(parents=True, exist_ok=True)
+
         if config is not None:
             loaded_cfg = config or {}
         elif config_path:
-            try:
-                loaded_cfg = self._load_yaml_config(config_path) or {}
-            except Exception:
-                loaded_cfg = {}
+            loaded_cfg = self._load_yaml_config(config_path) or {}
         else:
-            specific_config_file = PROJECT_ROOT / "mobile" / "config" / f"alert_config.{self.environment}.yaml"
-            default_config_file = PROJECT_ROOT / "mobile" / "config" / "alert_config.yaml"
-            if specific_config_file.exists():
-                loaded_cfg = self._load_yaml_config(str(specific_config_file)) or {}
-            elif default_config_file.exists():
-                loaded_cfg = self._load_yaml_config(str(default_config_file)) or {}
-            else:
+            candidates = [
+                self.config_dir / f"alert_config.{self.environment}.yaml",
+                PROJECT_ROOT / f"alert_config.{self.environment}.yaml",
+                self.config_dir / "alert_config.yaml",
+                PROJECT_ROOT / "alert_config.yaml",
+            ]
+            loaded_cfg = {}
+            for p in candidates:
+                if p.exists():
+                    loaded_cfg = self._load_yaml_config(str(p)) or {}
+                    break
+            if not loaded_cfg:
                 loaded_cfg = ENV_DEFAULTS.get(self.environment, {}).copy()
 
-        env_defaults = ENV_DEFAULTS.get(self.environment, {})
-        base_defaults: Dict[str, Any] = {
-            "email_enabled": False,
-            "sms_enabled": False,
-            "webhook_enabled": False,
-            "telegram_enabled": False,
-            "email_from": "",
-            "email_smtp": {},
-            "webhook_url": "",
-            "encryption_key": None,
-        }
-        merged = {**base_defaults, **env_defaults, **(loaded_cfg or {})}
-        self.config: Dict[str, Any] = merged
+        base_cfg = self._default_config() if hasattr(self, "_default_config") else {}
+        self.config = {**base_cfg, **loaded_cfg}
 
         env_config = self._load_env_config()
         self.config.update(env_config)
-
         if config is not None:
             self.config.update(config)
 
-        self.encryption_key = (
-            self.config.get("encryption_key") or os.getenv("ENCRYPTION_KEY")
-        )
+        self.encryption_key = self.config.get("encryption_key") or os.getenv("ENCRYPTION_KEY")
         if self.encryption_key:
             self._decrypt_config_values()
 
         self.alerts_log: List[Dict] = []
-
-        self.alerts_dir = PROJECT_ROOT / "mobile" / "alerts"
-
-        self.alerts_dir.mkdir(parents=True, exist_ok=True)
-
         self.cooldown_seconds = self.config.get("alert_cooldown_minutes", 60) * 60
-
         self.last_alert_time: Optional[datetime] = self._load_last_alert_time()
 
         # Initialize channels
 
         self._init_channels()
-
-        # Validate configuration
-
         self.validate_config()
 
         logger.info(f"AlertSystem initialized for environment: {self.environment}")
 
-    def _load_yaml_config(self, config_path: str) -> Dict:
-
-        if config_path is None:
-
+    def _load_yaml_config(self, path: str) -> Dict[str, Any]:
+        p = Path(path)
+        if not p.exists():
             return {}
-
-        try:
-
-            with open(config_path, "r") as f:
-
-                config = yaml.safe_load(f)
-
-            logger.info(f"Configuration loaded from {config_path}")
-
-            return config or {}
-
-        except FileNotFoundError:
-
-            logger.warning(f"Config file not found: {config_path}, using defaults")
-
-            return {}
-
-        except yaml.YAMLError as e:
-
-            logger.error(f"Error parsing config file: {e}")
-
-            return {}
-
-    def _load_env_config(self) -> Dict:
-
-        config = {}
-
-        if os.getenv("SMTP_SERVER"):
-
-            config["email_smtp"] = os.getenv("SMTP_SERVER")
-
-        if os.getenv("SMTP_PORT"):
-
-            try:
-
-                config["email_port"] = int(os.getenv("SMTP_PORT"))
-
-            except ValueError:
-
-                logger.warning(f"Invalid SMTP_PORT value: {os.getenv('SMTP_PORT')}")
-
-        if os.getenv("SMTP_USERNAME"):
-
-            config["email_user"] = os.getenv("SMTP_USERNAME")
-
-        if os.getenv("SMTP_PASSWORD"):
-
-            config["email_password"] = os.getenv("SMTP_PASSWORD")
-
-        if os.getenv("SMTP_FROM_ADDR"):
-
-            config["email_from"] = os.getenv("SMTP_FROM_ADDR")
-
-        if os.getenv("SMTP_TO_ADDRS"):
-
-            config["email_to"] = [
-                addr.strip() for addr in os.getenv("SMTP_TO_ADDRS").split(",")
-            ]
-
-        if os.getenv("EMAIL_ENABLED"):
-
-            config["email_enabled"] = os.getenv("EMAIL_ENABLED").lower() in (
-                "true",
-                "1",
-                "yes",
-            )
-
-        if os.getenv("DISCORD_WEBHOOK_URL"):
-
-            config["webhook_url"] = os.getenv("DISCORD_WEBHOOK_URL")
-
-        elif os.getenv("SLACK_WEBHOOK_URL"):
-
-            config["webhook_url"] = os.getenv("SLACK_WEBHOOK_URL")
-
-        elif os.getenv("WEBHOOK_URL"):
-
-            config["webhook_url"] = os.getenv("WEBHOOK_URL")
-
-        if os.getenv("WEBHOOK_ENABLED"):
-
-            config["webhook_enabled"] = os.getenv("WEBHOOK_ENABLED").lower() in (
-                "true",
-                "1",
-                "yes",
-            )
-
-        if os.getenv("TWILIO_ACCOUNT_SID"):
-
-            config["sms_account_sid"] = os.getenv("TWILIO_ACCOUNT_SID")
-
-        if os.getenv("TWILIO_AUTH_TOKEN"):
-
-            config["sms_auth_token"] = os.getenv("TWILIO_AUTH_TOKEN")
-
-        if os.getenv("TWILIO_PHONE_NUMBER"):
-
-            config["sms_from"] = os.getenv("TWILIO_PHONE_NUMBER")
-
-        if os.getenv("SMS_TO_NUMBERS"):
-
-            config["sms_to"] = [
-                num.strip() for num in os.getenv("SMS_TO_NUMBERS").split(",")
-            ]
-
-        if os.getenv("SMS_ENABLED"):
-
-            config["sms_enabled"] = os.getenv("SMS_ENABLED").lower() in (
-                "true",
-                "1",
-                "yes",
-            )
-
-        thresholds = {}
-
-        # Telegram
-
-        if os.getenv("TELEGRAM_BOT_TOKEN"):
-
-            config["telegram_bot_token"] = os.getenv("TELEGRAM_BOT_TOKEN")
-
-        if os.getenv("TELEGRAM_CHAT_ID"):
-
-            config["telegram_chat_id"] = os.getenv("TELEGRAM_CHAT_ID")
-
-        if os.getenv("TELEGRAM_ENABLED"):
-
-            config["telegram_enabled"] = os.getenv("TELEGRAM_ENABLED").lower() in (
-                "true",
-                "1",
-                "yes",
-            )
-
-        if os.getenv("ALERT_COOLDOWN_MINUTES"):
-
-            try:
-
-                config["alert_cooldown_minutes"] = int(
-                    os.getenv("ALERT_COOLDOWN_MINUTES")
-                )
-
-            except ValueError:
-
-                logger.warning(
-                    f"Invalid ALERT_COOLDOWN_MINUTES value: {os.getenv('ALERT_COOLDOWN_MINUTES')}"
-                )
-
-        for level in ["LOW", "MEDIUM", "HIGH", "CRITICAL"]:
-
-            env_var = f"ALERT_THRESHOLD_{level}"
-
-            if os.getenv(env_var):
-
-                try:
-
-                    thresholds[level.lower()] = float(os.getenv(env_var))
-
-                except ValueError:
-
-                    logger.warning(f"Invalid {env_var} value: {os.getenv(env_var)}")
-
-        if thresholds:
-
-            config["alert_thresholds"] = thresholds
-
-        return config
+        with p.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return data if isinstance(data, dict) else {}
+
+    def _load_env_config(self) -> Dict[str, Any]:
+        """
+        Load only explicitly-set env vars.
+        Do NOT inject defaults that override file config.
+        """
+        env_cfg: Dict[str, Any] = {}
+
+        b = _env_bool("ALERT_EMAIL_ENABLED")
+        if b is not None:
+            env_cfg["email_enabled"] = b
+
+        b = _env_bool("ALERT_WEBHOOK_ENABLED")
+        if b is not None:
+            env_cfg["webhook_enabled"] = b
+
+        b = _env_bool("ALERT_SMS_ENABLED")
+        if b is not None:
+            env_cfg["sms_enabled"] = b
+
+        b = _env_bool("ALERT_TELEGRAM_ENABLED")
+        if b is not None:
+            env_cfg["telegram_enabled"] = b
+
+        if os.getenv("ALERT_WEBHOOK_URL") is not None:
+            env_cfg["webhook_url"] = os.getenv("ALERT_WEBHOOK_URL", "")
+
+        if os.getenv("ALERT_EMAIL_USER") is not None:
+            env_cfg["email_user"] = os.getenv("ALERT_EMAIL_USER", "")
+        if os.getenv("ALERT_EMAIL_PASSWORD") is not None:
+            env_cfg["email_password"] = os.getenv("ALERT_EMAIL_PASSWORD", "")
+
+        return env_cfg
 
     def _decrypt_config_values(self):
         """Decrypt encrypted values in configuration if encryption key is available."""
@@ -507,90 +344,42 @@ class AlertSystem:
 
         return encrypted
 
-    def validate_config(self) -> tuple[bool, list[str]]:
+    def validate_config(self) -> Tuple[bool, List[str]]:
         """
         Validate the configuration to ensure all required credentials are present.
 
         Returns:
-            Tuple of (is_valid, list_of_errors)
+            True if configuration is valid, False otherwise
         """
 
-        errors: list[str] = []
+        errors: List[str] = []
 
-        if not any(
-            (
-                self.config.get("email_enabled"),
-                self.config.get("sms_enabled"),
-                self.config.get("webhook_enabled"),
-                self.config.get("telegram_enabled"),
-            )
-        ):
-            errors.append(
-                "At least one notification channel must be enabled (email/sms/webhook/telegram)."
-            )
-
-        if self.config.get("email_enabled"):
-            smtp_cfg = self.config.get("email_smtp", {})
-            if isinstance(smtp_cfg, dict):
-                smtp_server = smtp_cfg.get("host") or smtp_cfg.get("server") or os.getenv("SMTP_SERVER", "smtp.gmail.com")
-                smtp_port = smtp_cfg.get("port") or self.config.get("email_port") or int(os.getenv("SMTP_PORT", 587))
-            else:
-                smtp_server = smtp_cfg or os.getenv("SMTP_SERVER", "smtp.gmail.com")
-                smtp_port = self.config.get("email_port", int(os.getenv("SMTP_PORT", 587)))
-
-            try:
-                smtp_port = int(smtp_port)
-            except (TypeError, ValueError):
-                smtp_port = int(os.getenv("SMTP_PORT", 587))
-
-            email_user = (
-                self.config.get("email_user")
-                or (smtp_cfg.get("user") if isinstance(smtp_cfg, dict) else None)
-                or os.getenv("SMTP_USERNAME", "")
-            )
-            email_password = (
-                self.config.get("email_password")
-                or (smtp_cfg.get("password") if isinstance(smtp_cfg, dict) else None)
-                or os.getenv("SMTP_PASSWORD", "")
-            )
-            email_from = self.config.get("email_from") or os.getenv("SMTP_FROM_ADDR", email_user)
-
-            missing = []
-            if not email_user:
-                missing.append("email_user")
-            if not email_password:
-                missing.append("email_password")
-            if not email_from:
-                missing.append("email_from")
-
-            if missing:
-                errors.append(
-                    f"Email enabled but missing configuration: {', '.join(missing)}.")
-        if self.config.get("webhook_enabled"):
-            if not self.config.get("webhook_url"):
-                errors.append("Webhook enabled but webhook_url not configured.")
-
-        if self.config.get("sms_enabled"):
-            missing = [
-                key
-                for key in (
-                    "sms_account_sid",
-                    "sms_auth_token",
-                    "sms_from",
-                    "sms_to",
-                )
-                if not self.config.get(key)
+        channels_enabled = any(
+            [
+                bool(self.config.get("email_enabled", False)),
+                bool(self.config.get("webhook_enabled", False)),
+                bool(self.config.get("sms_enabled", False)),
+                bool(self.config.get("telegram_enabled", False)),
             ]
-            if missing:
-                errors.append(
-                    f"SMS enabled but missing configuration: {', '.join(missing)}."
-                )
+        )
+        if not channels_enabled:
+            errors.append("At least one alert channel should be enabled")
+
+        if self.config.get("email_enabled", False):
+            if not self.config.get("email_user") or not self.config.get("email_password"):
+                errors.append("Email enabled but missing credentials")
+
+        if self.config.get("webhook_enabled", False):
+            if not self.config.get("webhook_url"):
+                errors.append("Webhook enabled but webhook_url is missing")
 
         is_valid = len(errors) == 0
         if not is_valid:
-            logger.warning(
-                f"Configuration validation failed with {len(errors)} error(s)"
-            )
+            logger.warning(f"Configuration validation failed with {len(errors)} error(s)")
+            for e in errors:
+                logger.warning(f"- {e}")
+
+        # IMPORTANT: no destructive mutation of self.config
         return is_valid, errors
 
     def _init_channels(self):
@@ -771,14 +560,19 @@ class AlertSystem:
 
         return alert
 
-    def _get_alert_level(self, score: float) -> str:
+    def _get_alert_level(self, risk_score: float) -> str:
         """Return alert level label based on score"""
-        thresholds = self.LEVEL_THRESHOLDS
-        if score >= thresholds.get("CRITICAL", 0.95):
+        thresholds = self.config.get("thresholds", {})
+        low = float(thresholds.get("low", 0.3))
+        medium = float(thresholds.get("medium", 0.6))
+        high = float(thresholds.get("high", 0.8))
+        critical = float(thresholds.get("critical", 0.95))
+
+        if risk_score >= critical:
             return "CRITICAL"
-        if score >= thresholds.get("HIGH", 0.9):
+        if risk_score >= high:
             return "HIGH"
-        if score >= thresholds.get("MEDIUM", 0.7):
+        if risk_score >= medium:
             return "MEDIUM"
         return "LOW"
 
@@ -1123,17 +917,8 @@ def reset_alert_system() -> None:
     _alert_system = None
 
 
-def validate_alert_config() -> Tuple[bool, List[str]]:
-    """
-
-    Standalone function to validate alert configuration without initializing the system.
-
-    Useful for CI/CD pipelines and startup checks.
-
-    """
-
-    alert_system = AlertSystem()
-
+def validate_alert_config(config: Optional[Dict[str, Any]] = None):
+    alert_system = AlertSystem(config=config) if config is not None else AlertSystem()
     return alert_system.validate_config()
 
 

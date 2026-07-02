@@ -23,8 +23,58 @@ EXAMPLE_LEGACY_DIR = PROJECT_ROOT / "examples" / "mobile_devices"
 @st.cache_data(show_spinner=False)
 def load_spatial_data(csv_path: str, mtime: float) -> pd.DataFrame:
     """Carica il CSV in cache. L'argomento mtime assicura l'aggiornamento se il file cambia sul disco."""
-
     return pd.read_csv(csv_path)
+
+def list_available_runs(runs_root: Path) -> list[str]:
+    if not runs_root.exists():
+        return []
+    runs = [p for p in runs_root.iterdir() if p.is_dir()]
+    runs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return [p.name for p in runs]
+
+def load_spatial_data_from_runs(runs_root: Path, run_names: list[str]) -> pd.DataFrame:
+    frames = []
+    for rn in run_names:
+        csv_path = runs_root / rn / "processed" / "deltas_spatial.csv"
+        if csv_path.exists():
+            df = pd.read_csv(csv_path)
+            df["run_name"] = rn
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+def run_pipeline_streamlit(cmd: list, log_placeholder):
+    """Esegue un comando e mostra l'output in tempo reale su Streamlit."""
+    log_text = ""
+    log_placeholder.info("Avvio del processo in background...", icon="⏳")
+
+    # Assicura che tutti gli argomenti del comando siano stringhe
+    cmd_str = [str(arg) for arg in cmd]
+    st.code(f"▶️ Esecuzione: {' '.join(cmd_str)}")
+
+    process = subprocess.Popen(
+        cmd_str,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        encoding='utf-8'
+    )
+
+    log_box = st.empty()
+    if process.stdout:
+        for line in iter(process.stdout.readline, ""):
+            log_text += line
+            # Mantiene solo le ultime 50 righe per non sovraccaricare il DOM
+            lines = log_text.splitlines()
+            if len(lines) > 50:
+                log_text = "\n".join(lines[-50:]) + "\n"
+            log_box.code(log_text, language="bash")
+        process.stdout.close()
+
+    return_code = process.wait()
+    return return_code
 
 
 st.title("🌋 Interfaccia Pipeline Sismologica Geospaziale")
@@ -52,13 +102,13 @@ with st.sidebar:
 
     # Inizializza variabili file per evitare NameError
 
-    events_csv = ""
+    events_csv: Path | str = ""
 
-    picks_csv = ""
+    picks_csv: Path | str = ""
 
-    stations_csv = str(EXAMPLE_LEGACY_DIR / "stations.csv")
+    stations_csv: Path | str = EXAMPLE_LEGACY_DIR / "stations.csv"
 
-    delta_csv = str(EXAMPLE_LEGACY_DIR / "scoperte_automatiche.csv.gz")
+    delta_csv: Path | str = EXAMPLE_LEGACY_DIR / "scoperte_automatiche.csv.gz"
 
     if use_existing_files == "File locali":
 
@@ -76,13 +126,13 @@ with st.sidebar:
 
         stations_csv = st.text_input(
             "Percorso Stations CSV",
-            value=str(EXAMPLE_LEGACY_DIR / "stations.csv"),
+            value=str(stations_csv),
             help="Catalogo stazioni usato dalla pipeline e dall'esempio legacy integrato.",
         )
 
         delta_csv = st.text_input(
             "Percorso Delta CSV (opzionale)",
-            value=str(EXAMPLE_LEGACY_DIR / "scoperte_automatiche.csv.gz"),
+            value=str(delta_csv),
             help="CSV gzip già pronto con i delta. Con il dataset di esempio la pipeline parte subito.",
         )
 
@@ -116,61 +166,19 @@ with st.sidebar:
 
             data_raw_dir.mkdir(parents=True, exist_ok=True)
 
-            if uploaded_events:
+            def save_uploaded_file(uploaded_file):
+                if uploaded_file:
+                    target_path = data_raw_dir / uploaded_file.name
+                    with open(target_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    st.success(f"File salvato: {target_path}")
+                    return target_path
+                return ""
 
-                events_csv = str(data_raw_dir / uploaded_events.name)
-
-                with open(events_csv, "wb") as f:
-
-                    f.write(uploaded_events.getbuffer())
-
-                st.success(f"Events CSV salvato in {events_csv}")
-
-            else:
-
-                events_csv = ""
-
-            if uploaded_picks:
-
-                picks_csv = str(data_raw_dir / uploaded_picks.name)
-
-                with open(picks_csv, "wb") as f:
-
-                    f.write(uploaded_picks.getbuffer())
-
-                st.success(f"Picks CSV salvato in {picks_csv}")
-
-            else:
-
-                picks_csv = ""
-
-            if uploaded_stations:
-
-                stations_csv = str(data_raw_dir / uploaded_stations.name)
-
-                with open(stations_csv, "wb") as f:
-
-                    f.write(uploaded_stations.getbuffer())
-
-                st.success(f"Stations CSV salvato in {stations_csv}")
-
-            else:
-
-                stations_csv = ""
-
-            if uploaded_delta:
-
-                delta_csv = str(data_raw_dir / uploaded_delta.name)
-
-                with open(delta_csv, "wb") as f:
-
-                    f.write(uploaded_delta.getbuffer())
-
-                st.success(f"Delta CSV salvato in {delta_csv}")
-
-            else:
-
-                delta_csv = ""
+            events_csv = save_uploaded_file(uploaded_events)
+            picks_csv = save_uploaded_file(uploaded_picks)
+            stations_csv = save_uploaded_file(uploaded_stations)
+            delta_csv = save_uploaded_file(uploaded_delta)
 
     st.subheader("📍 Filtro Spaziale (Fase 0)")
 
@@ -371,7 +379,7 @@ if run_button:
 
     cmd_pipeline = [
         sys.executable,
-        str(PROJECT_ROOT / "run_pipeline.py"),
+        PROJECT_ROOT / "run_pipeline.py",
         "--run-name",
         run_name,
     ]
@@ -413,9 +421,9 @@ if run_button:
 
         cmd_pipeline.append("--mobile-analysis")
 
-        cmd_pipeline.extend(["--mobile-min-stations", str(mobile_min_stations)])
+        cmd_pipeline.extend(["--mobile-min-stations", mobile_min_stations])
 
-        cmd_pipeline.extend(["--mobile-alert-threshold", str(mobile_alert_threshold)])
+        cmd_pipeline.extend(["--mobile-alert-threshold", mobile_alert_threshold])
 
         cmd_pipeline.extend(["--mobile-model-type", mobile_model_type])
 
@@ -423,122 +431,22 @@ if run_button:
 
             cmd_pipeline.append("--mobile-generate-alerts")
 
-    status_msg = st.empty()
-
-    status_msg.info(
-        f"Avvio della run: **{run_name}** in corso. Attendi il completamento...",
-        icon="⏳",
-    )
-
-    if use_spatial_filter and not skip_phase0:
-
-        with st.spinner("Fase 0: Estrazione stazioni nell'area selezionata..."):
-
-            cmd_fase0 = [
-                sys.executable,
-                str(PROJECT_ROOT / "scripts" / "select_stations_spatial.py"),
-                "--input-csv",
-                stations_csv,
-                "--point",
-                str(lat),
-                str(lon),
-                str(radius),
-                "--output-file",
-                str(PROJECT_ROOT / "runs" / run_name / "selected_stations.txt"),
-            ]
-
-            try:
-
-                res0 = subprocess.run(
-                    cmd_fase0, capture_output=True, text=True, check=True
-                )
-
-                st.success("Selezione spaziale completata!")
-
-            except subprocess.CalledProcessError as e:
-
-                st.error("Errore durante la Fase 0 (Selezione Spaziale)")
-
-                st.code(e.stderr)
-
-                st.stop()
-
+    # Aggiungi parametri per il download se abilitato
     if run_download and not skip_phase1:
+        cmd_pipeline.append("--run-download")
+        cmd_pipeline.extend(["--download-start", dl_start.strftime("%Y-%m-%d")])
+        cmd_pipeline.extend(["--download-end", dl_end.strftime("%Y-%m-%d")])
 
-        st.info(
-            "Fase 1: Download delle tracce MiniSEED in corso. Leggi i log qui sotto in tempo reale..."
-        )
+    status_msg = st.empty()
+    log_placeholder = st.empty()
 
-        cmd_fase1 = [
-            sys.executable,
-            "-u",
-            str(PROJECT_ROOT / "scripts" / "download_cf_waveforms.py"),
-            "--start",
-            dl_start.strftime("%Y-%m-%dT00:00:00"),
-            "--end",
-            dl_end.strftime("%Y-%m-%dT23:59:59"),
-        ]
+    return_code = run_pipeline_streamlit(cmd_pipeline, log_placeholder)
 
-        if use_spatial_filter:
-            cmd_fase1 += [
-                "--stations-file",
-                str(PROJECT_ROOT / "runs" / run_name / "selected_stations.txt"),
-            ]
-
-        log_box = st.empty()
-        log_text = ""
-
-        process = subprocess.Popen(
-            cmd_fase1,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-
-        if process.stdout is not None:
-            while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-                if line:
-                    log_text += line
-                    lines = log_text.splitlines()
-                    if len(lines) > 25:
-                        log_text = "\n".join(lines[-25:]) + "\n"
-                    log_box.code(log_text, language="bash")
-
-            process.stdout.close()
-
-        if process.wait() != 0:
-            st.error("❌ Errore durante il download delle tracce (Fase 1)")
-            st.stop()
-
-        st.success("✅ Download tracce completato!")
-
-    with st.spinner("Esecuzione delle analisi spaziali..."):
-
-        try:
-
-            res_pipe = subprocess.run(
-                cmd_pipeline, capture_output=True, text=True, check=True
-            )
-
-            st.success("Pipeline completata con successo! 🎉")
-
-            status_msg.empty()
-
-            with st.expander("Mostra Log Dettagliati dell'Orchestratore"):
-
-                st.code(res_pipe.stdout)
-
-        except subprocess.CalledProcessError as e:
-
-            st.error("Errore critico durante l'esecuzione della pipeline!")
-
-            st.code(e.stderr)
-
-            st.stop()
+    if return_code == 0:
+        status_msg.success(f"Pipeline per la run **{run_name}** completata con successo! 🎉")
+        st.balloons()
+    else:
+        status_msg.error(f"Errore durante l'esecuzione della pipeline per la run **{run_name}**. Controlla i log qui sopra. (Codice: {return_code})")
 
 
 if (
@@ -551,9 +459,9 @@ if (
 
     cmd_live = [
         sys.executable,
-        str(PROJECT_ROOT / "scripts" / "predict_live.py"),
+        PROJECT_ROOT / "scripts" / "predict_live.py",
         "--model",
-        str(PROJECT_ROOT / "mobile" / "models" / selected_model),
+        PROJECT_ROOT / "mobile" / "models" / selected_model,
         "--data",
         live_data_csv,
         "--threshold",
@@ -589,105 +497,37 @@ if (
 
 st.header("🗺️ Mappa Interattiva delle Stazioni")
 
-spatial_csv = PROJECT_ROOT / "runs" / run_name / "processed" / "deltas_spatial.csv"
+runs_root = PROJECT_ROOT / "runs"
 
+if consult_mode == "Merge tutte le esecuzioni":
+    df_spatial = load_spatial_data_from_runs(runs_root, available_runs) if available_runs else pd.DataFrame()
+else:
+    spatial_csv = (
+        runs_root / selected_run_for_view / "processed" / "deltas_spatial.csv"
+        if selected_run_for_view
+        else None
+    )
+    df_spatial = (
+        load_spatial_data(str(spatial_csv), spatial_csv.stat().st_mtime)
+        if spatial_csv is not None and spatial_csv.exists()
+        else pd.DataFrame()
+    )
 
-if spatial_csv.exists():
-
-    df_spatial = load_spatial_data(str(spatial_csv), spatial_csv.stat().st_mtime)
-
-    if (
-        not df_spatial.empty
-        and "latitude" in df_spatial.columns
-        and "longitude" in df_spatial.columns
-    ):
-
-        if delta_range is not None:
-
-            df_spatial = df_spatial[
-                (df_spatial["delta_seconds"] >= delta_range[0])
-                & (df_spatial["delta_seconds"] <= delta_range[1])
-            ]
-
-        if search_station and df_spatial is not None:
-
-            df_spatial = df_spatial[
-                df_spatial["station"].str.contains(search_station.upper(), na=False)
-            ]
-
-        center_lat = df_spatial["latitude"].mean() if not df_spatial.empty else 40.82
-
-        center_lon = df_spatial["longitude"].mean() if not df_spatial.empty else 14.14
-
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles=None)
-
-        folium.TileLayer("CartoDB positron", name="CartoDB Light (Default)").add_to(m)
-
-        folium.TileLayer(
-            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-            attr="Esri",
-            name="Esri Satellite",
-        ).add_to(m)
-
-        folium.TileLayer("OpenStreetMap", name="OpenStreetMap").add_to(m)
-
-        Fullscreen(position="topright").add_to(m)
-
-        stazioni_group = folium.FeatureGroup(name="Stazioni Sismiche").add_to(m)
-
-        df_delays = df_spatial[df_spatial["delta_seconds"] > 0]
-
-        if not df_delays.empty:
-
-            heat_data = df_delays[
-                ["latitude", "longitude", "delta_seconds"]
-            ].values.tolist()
-
-            heat_map_group = folium.FeatureGroup(
-                name="HeatMap Ritardi", show=False
-            ).add_to(m)
-
-            HeatMap(heat_data, radius=25, blur=15, name="HeatMap Ritardi").add_to(
-                heat_map_group
-            )
-
-        for _, row in df_spatial.iterrows():
-
-            delta = row.get("delta_seconds", 0)
-
-            color = "crimson" if delta > 0.1 else "darkblue" if delta < -0.1 else "gray"
-
-            popup_html = f"<b>Stazione: {row['station']}</b><br>Delta: {delta:.3f} s"
-
-            folium.CircleMarker(
-                location=[row["latitude"], row["longitude"]],
-                radius=7,
-                popup=folium.Popup(popup_html, max_width=200),
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.7,
-            ).add_to(stazioni_group)
-
-        folium.LayerControl(position="topright").add_to(m)
-
-        st_folium(m, use_container_width=True, height=500, returned_objects=[])
-
-        st.markdown("### 📋 Dati Stazioni Filtrati")
-
-        if not df_spatial.empty:
-
-            st.dataframe(
-                df_spatial.sort_values("delta_seconds", ascending=False),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            st.caption(f"Stazioni visualizzate: {len(df_spatial)}")
-
-        else:
-
-            st.warning("Nessuna stazione corrisponde ai criteri di filtro impostati.")
+if (
+    not df_spatial.empty
+    and "latitude" in df_spatial.columns
+    and "longitude" in df_spatial.columns
+):
+    if not df_spatial.empty:
+        st.dataframe(
+            df_spatial.sort_values("delta_seconds", ascending=False),
+            use_container_width=True,
+            hide_index=True,
+        )
+        caption = f"Stazioni visualizzate: {len(df_spatial)}"
+        if "run_name" in df_spatial.columns:
+            caption += f" | Run incluse: {df_spatial['run_name'].nunique()}"
+        st.caption(caption)
 
 
 st.header("📊 Mappe e Grafici Generati")
