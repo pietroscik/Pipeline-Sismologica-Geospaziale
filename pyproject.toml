@@ -88,6 +88,15 @@ dev = [
     "black>=23.0",
     "mypy>=1.0",
 ]
+sms = [
+    "twilio>=8.0.0",
+]
+ml = [
+    "torch>=2.0.0",
+    "torch_geometric>=2.3.0",
+    "imbalanced-learn>=0.10.0",
+    "xgboost>=1.7.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/pietroscik/Pipeline-Sismologica-Geospaziale"
@@ -106,11 +115,17 @@ max-line-length = 88
 exclude = ["venv/*", ".git/*", "__pycache__/*"]
 ignore = ["E203", "W503"]
 
+[tool.isort]
+profile = "black"
+line_length = 88
+multi_line_mode = 3
+
 [tool.mypy]
 python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
+disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
