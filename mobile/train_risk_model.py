@@ -62,7 +62,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
-from mobile.model_versioning import ModelVersionManager, get_model_manager
+from mobile.model_versioning import ModelVersionManager, log_training_run
 from path_utils import PROJECT_ROOT
 
 # Constants
@@ -138,35 +138,28 @@ def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
 
         df["amplitude_range"] = df["std"] * 2 if "std" in df.columns else 1.0
 
-    # Select features
+    # Feature selection robusta
+    candidate_features = ["sampling_rate", "delta_seconds", "start_epoch", "end_epoch"]
+    feature_cols = [c for c in candidate_features if c in df.columns]
+    if not feature_cols:
+        raise ValueError(f"No usable feature columns found. Available: {list(df.columns)}")
 
-    available_features = [f for f in FEATURE_COLUMNS if f in df.columns]
+    features = df[feature_cols].copy()
 
-    if not available_features:
-
-        raise ValueError(f"No feature columns found. Available: {list(df.columns)}")
-
-    features = df[available_features]
-
-    # Create target: normalized risk score (0-1)
-
-    if "delta" in df.columns:
-
-        delta_min = df["delta"].min()
-
-        delta_max = df["delta"].max()
-
-        target = (df["delta"] - delta_min) / (delta_max - delta_min + 1e-10)
-
-    elif "risk" in df.columns:
-
-        target = df["risk"]
-
-    else:
-
-        target = (df["std"] / df["std"].max()) * 0.5 + (
-            df["amplitude_range"] / df["amplitude_range"].max()
+    # Target robusto
+    if "std" in df.columns and "max_amplitude" in df.columns:
+        target = (df["std"] / max(df["std"].max(), 1e-12)) * 0.5 + (
+            df["max_amplitude"] / max(df["max_amplitude"].max(), 1e-12)
         ) * 0.5
+    elif "delta_seconds" in df.columns:
+        # fallback: proxy di rischio basato su |delta_seconds| normalizzato
+        s = df["delta_seconds"].abs().astype(float)
+        denom = max(float(np.nanpercentile(s, 95)), 1e-12)
+        target = (s / denom).clip(0, 1)
+    else:
+        raise ValueError(
+            "Cannot build target: missing ['std','max_amplitude'] and fallback ['delta_seconds']."
+        )
 
     return features, target
 
@@ -366,17 +359,20 @@ def main():
 
     print(f"\nSaving model with versioning...")
 
+    # Prepare params once
+    train_params = {
+        "model_type": args.model_type,
+        "n_estimators": 100,
+        "max_depth": 10 if args.model_type == "random_forest" else 6,
+        "random_state": args.random_state,
+    }
+
     version = manager.save_model(
         model=model,
         metadata=metadata,
         performance=performance,
         version=args.version,
-        params={
-            "model_type": args.model_type,
-            "n_estimators": 100,
-            "max_depth": 10 if args.model_type == "random_forest" else 6,
-            "random_state": args.random_state,
-        },
+        params=train_params,
         tags={"dataset": args.input.name, "model_type": args.model_type},
     )
 
@@ -402,6 +398,28 @@ def main():
 
     print("\nModel ready for use with monitor_campi_flegrei.py!")
 
+    # Dopo il training e dopo aver salvato il modello su disco:
+    # Esempio variabili attese:
+    # model_output_path: str
+    # best_params: dict
+    # metrics_dict: dict[str, float]
+
+    # Tracking run (Issue #6) con variabili reali
+    model_output_path = str(manager.models_dir / version / "model.joblib")
+    metrics_dict = performance
+
+    try:
+        tracking_info = log_training_run(
+            model_name="risk_model",
+            params=train_params,
+            metrics=metrics_dict,
+            artifacts=[model_output_path],
+        )
+        print(f"[TRACKING] run_id={tracking_info['run_id']}")
+        print(f"[TRACKING] version={tracking_info['version']}")
+        print(f"[TRACKING] manifest={tracking_info['manifest']}")
+    except Exception as e:
+        print(f"[TRACKING] warning: {e}")
 
 if __name__ == "__main__":
 
