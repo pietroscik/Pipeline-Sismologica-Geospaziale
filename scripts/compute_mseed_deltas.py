@@ -17,7 +17,7 @@ import pandas as pd
 from obspy import read
 from obspy.core import Stream
 from obspy.signal.trigger import classic_sta_lta, trigger_onset
-from utils import setup_logger
+from scripts.utils import setup_logger
 
 logger = setup_logger("mseed_deltas")
 
@@ -135,6 +135,21 @@ def discover_events(
     return pd.DataFrame(final_rows)
 
 
+def create_empty_csv(output_path: Path, message: str):
+    """Creates an empty CSV with the correct headers and exits gracefully."""
+    logger.warning(f"{message} Verrà creato un file CSV vuoto.")
+    columns = [
+        'filename', 'network', 'station', 'channel', 'start_epoch',
+        'end_epoch', 'sampling_rate', 'arrival_epoch', 'event_id',
+        'arrival_iso', 'start_iso', 'end_iso', 'event_reference_epoch',
+        'delta_seconds'
+    ]
+    # Ensure the parent directory exists before writing the file
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(columns=columns).to_csv(output_path, index=False)
+    logger.info(f"Salvato file CSV vuoto in {output_path}")
+
+
 def iter_mseed_files(directory: Path) -> Iterable[Path]:
     yield from sorted(directory.rglob("*.mseed"))
 
@@ -185,6 +200,10 @@ def main() -> None:
     all_files = list(iter_mseed_files(args.mseed_dir))
     total_files = len(all_files)
     logger.info(f"Trovati {total_files} file MiniSEED da elaborare.")
+
+    if not all_files:
+        create_empty_csv(args.output_csv, "Nessun file mseed trovato nella directory.")
+        return
 
     for i, path in enumerate(all_files, 1):
         if i % 10 == 0 or i == total_files:
@@ -248,15 +267,18 @@ def main() -> None:
             )
 
     if not rows:
-        raise SystemExit("Nessun pick trovato. Controlla i parametri o le tracce.")
+        create_empty_csv(args.output_csv, "Nessun pick trovato. Controlla i parametri o le tracce.")
+        return
 
     df_raw = pd.DataFrame(rows)
     df = discover_events(df_raw, cfg.coincidence_window, cfg.min_stations)
 
     if df.empty:
-        raise SystemExit(
-            f"Trovati {len(df_raw)} trigger, ma nessuno forma una coincidenza di rete sufficiente."
+        create_empty_csv(
+            args.output_csv,
+            f"Trovati {len(df_raw)} trigger, ma nessuno forma una coincidenza di rete sufficiente.",
         )
+        return
 
     df["arrival_iso"] = pd.to_datetime(df["arrival_epoch"], unit="s")
     df["start_iso"] = pd.to_datetime(df["start_epoch"], unit="s")

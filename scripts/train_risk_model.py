@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import joblib
+import duckdb
 import numpy as np
 import pandas as pd
 from imblearn.over_sampling import SMOTE
 
 # Aggiungiamo la root del progetto e la cartella mobile al path per risolvere le dipendenze
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -23,13 +24,12 @@ sys.path.insert(0, str(PROJECT_ROOT / "mobile"))
 from mobile.alert_system import AlertSystem, get_alert_system
 from mobile.data_validator import (DataValidationError, validate_csv_file,
                             validate_data)
-from logging_config import setup_logging
+from scripts.utils import setup_logger
 
 # Configura logging
 
 try:
-
-    logger = setup_logging(__name__)
+    logger = setup_logger(__name__)
 
 except Exception:
 
@@ -50,6 +50,7 @@ DEFAULT_MODEL_TYPE = "xgboost"
 DEFAULT_MIN_STATIONS = 18
 
 DEFAULT_ALERT_THRESHOLD = 0.7
+DUCKDB_PATH = PROJECT_ROOT / "data" / "db" / "seismic_output.duckdb"
 
 
 def calculate_rolling_b_value(series: pd.Series, window_size: int) -> pd.Series:
@@ -84,139 +85,31 @@ def calculate_rolling_b_value(series: pd.Series, window_size: int) -> pd.Series:
 
     return pd.Series(b_values, index=series.index).fillna(method='ffill').fillna(0)
 
-def create_ml_features_from_deltas(
-    df_deltas: pd.DataFrame,
-    target_window_hours: int = 24,
-    target_threshold: float = 15.0,
-) -> pd.DataFrame:
+def load_data_from_db() -> pd.DataFrame:
     """
-    Trasforma un DataFrame di delta grezzi in un dataset di feature per ML.
-
-    Questa funzione replica e migliora la logica precedentemente in `prepara_ml.py`.
-    Prende i dati grezzi dei rilevamenti e li aggrega in una griglia oraria,
-    calcolando feature temporali e il target per la predizione.
-
-    Args:
-        df_deltas: DataFrame con i rilevamenti (richiede 'arrival_iso', 'delta_seconds').
-        target_window_hours: Finestra temporale (in ore) per cercare eventi futuri per il target.
-        target_threshold: Soglia di 'energia' per definire un evento significativo.
-
-    Returns:
-        DataFrame con feature orarie pronto per il training.
+    Carica il dataset per il training esclusivamente dal database DuckDB.
+    Utilizza la vista 'ml_features_ready_view' come unica fonte di verità.
     """
-    logger.info("🛠️  Inizio feature engineering dal dataset di delta grezzi...")
-
-    # 1. Validazione e preparazione iniziale
-    if "arrival_iso" not in df_deltas.columns:
-        raise ValueError("La colonna 'arrival_iso' è richiesta per l'analisi temporale.")
-    df_deltas["arrival_iso"] = pd.to_datetime(df_deltas["arrival_iso"], errors="coerce")
-    df = df_deltas.dropna(subset=["arrival_iso"]).set_index("arrival_iso").sort_index()
-
-    # Usiamo il delta_seconds come proxy dell'energia (ritardo = anomalia)
-    df["energia"] = pd.to_numeric(df["delta_seconds"], errors="coerce").fillna(0)
-
-    # 2. Raggruppamento in griglia oraria continua
-    logger.info("   - Aggregazione dati su base oraria...")
-    # Assicuriamoci che ci sia un range di date per creare la griglia
-    if len(df.index) > 1:
-        full_range = pd.date_range(start=df.index.min().floor('H'), end=df.index.max().ceil('H'), freq='H')
-        df_hourly = pd.DataFrame(index=full_range)
-    else:
-        df_hourly = pd.DataFrame(index=df.index.floor('H'))
-
-    # Calcolo delle feature aggregate
-    hourly_agg = df.resample("1H").agg(
-        numero_eventi=("energia", "size"),
-        energia_max=("energia", "max"),
-        energia_media=("energia", "mean"),
-        energia_std=("energia", "std"),
-    ).fillna(0)
-
-    df_hourly = df_hourly.join(hourly_agg, how='left').fillna(0)
-
-    # 3. Calcolo Finestre Mobili (Rolling Features)
-    logger.info("   - Calcolo feature basate su finestre mobili (6h, 12h, 24h)...")
-    for window in [6, 12, 24, 48]:
-        df_hourly[f"eventi_ultime_{window}h"] = df_hourly["numero_eventi"].rolling(window, min_periods=1).sum()
-        df_hourly[f"energia_max_ultime_{window}h"] = df_hourly["energia_max"].rolling(window, min_periods=1).max()
-        df_hourly[f"energia_media_ultime_{window}h"] = df_hourly["energia_media"].rolling(window, min_periods=1).mean()
-
-    # 4. Feature Temporali (ora del giorno, giorno della settimana, etc.)
-    logger.info("   - Aggiunta feature cicliche temporali...")
-    df_hourly["ora_del_giorno"] = df_hourly.index.hour
-    df_hourly["giorno_della_settimana"] = df_hourly.index.dayofweek
-    df_hourly["is_notte"] = ((df_hourly["ora_del_giorno"] >= 22) | (df_hourly["ora_del_giorno"] <= 6)).astype(int)
-    df_hourly["is_weekend"] = (df_hourly["giorno_della_settimana"] >= 5).astype(int)
-
-    # 5. Calcolo b-value su finestra mobile (Feature avanzata)
-    logger.info("   - Calcolo b-value su finestra mobile (24h)...")
-    # Usiamo 'numero_eventi' come proxy della magnitudo per il calcolo del b-value
-    df_hourly['bvalue_rolling_24h'] = calculate_rolling_b_value(df_hourly['numero_eventi'], window_size=24)
-
-    # 5. Creazione del Target per l'addestramento
-    logger.info(f"   - Creazione del target 'Target_Allarme' (finestra: {target_window_hours}h, soglia energia: >{target_threshold})...")
-    # Calcola l'energia massima nella finestra futura per ogni punto temporale
-    df_hourly['max_energia_futura'] = df_hourly['energia_max'].shift(-target_window_hours).rolling(window=target_window_hours, min_periods=1).max()
-
-    # Il target è 1 se l'energia massima futura supera la soglia
-    df_hourly["Target_Allarme"] = (df_hourly["max_energia_futura"] > target_threshold).astype(int)
-
-    # Rimuovi le ultime righe dove il target non può essere calcolato
-    df_hourly = df_hourly.iloc[:-target_window_hours]
-
-    logger.info(f"✅ Feature engineering completato. Creato dataset di {len(df_hourly)} campioni orari.")
-    
-    # Riorganizza le colonne per coerenza
-    feature_cols = [
-        'numero_eventi', 'energia_max', 'energia_media', 'energia_std',
-        'eventi_ultime_6h', 'energia_max_ultime_6h', 'energia_media_ultime_6h',
-        'eventi_ultime_12h', 'energia_max_ultime_12h', 'energia_media_ultime_12h',
-        'eventi_ultime_24h', 'energia_max_ultime_24h', 'energia_media_ultime_24h',
-        'eventi_ultime_48h', 'energia_max_ultime_48h', 'energia_media_ultime_48h',
-        'ora_del_giorno', 'giorno_della_settimana', 'is_notte', 'is_weekend'
-    ] + ['bvalue_rolling_24h'] # Aggiunta del b-value alle feature
-
-    target_col = 'Target_Allarme'
-    
-    # Assicurati che tutte le colonne esistano, riempiendo con 0 se mancano
-    for col in feature_cols + [target_col]:
-        if col not in df_hourly.columns:
-            df_hourly[col] = 0
-            
-    return df_hourly[feature_cols + [target_col]]
-
-
-def load_data(dataset_path: Path) -> pd.DataFrame:
-    """Carica il dataset per il training."""
-
-    logger.info(f"📖 Caricamento dataset da {dataset_path}...")
-
-    if not dataset_path.exists():
-        raise FileNotFoundError(f"Dataset file non trovato: {dataset_path}")
-    if dataset_path.stat().st_size == 0:
-        raise DataValidationError(
-            "Dataset file e' vuoto", errors=["Dataset file is empty"]
+    logger.info(f"📖 Caricamento dataset dal database DuckDB: {DUCKDB_PATH}")
+    if not DUCKDB_PATH.exists():
+        raise FileNotFoundError(
+            f"File database DuckDB non trovato: {DUCKDB_PATH}. "
+            "Assicurarsi di aver eseguito la pipeline di ingestione dati."
         )
 
-    # Load and validate CSV
+    try:
+        con = duckdb.connect(database=str(DUCKDB_PATH), read_only=True)
+        logger.info("   - Esecuzione query sulla vista 'ml_features_ready_view'...")
+        df = con.execute("SELECT * FROM ml_features_ready_view").fetch_df()
+        con.close()
 
-    # MODIFICA: Controlliamo se il file è già un dataset ML o se è un file di delta grezzi
-    df_raw = pd.read_csv(dataset_path)
-    
-    # Se mancano le colonne tipiche del ML, ma ci sono quelle dei delta,
-    # allora eseguiamo il feature engineering.
-    if "Target_Allarme" not in df_raw.columns and "arrival_iso" in df_raw.columns:
-        logger.info("Rilevato dataset di delta grezzi. Avvio del feature engineering...")
-        df = create_ml_features_from_deltas(df_raw)
-    else:
-        logger.info("Rilevato dataset ML pre-elaborato.")
-        try:
-            df = validate_csv_file(dataset_path, required_columns={"Target_Allarme"})
-        except DataValidationError as e:
-            logger.error(f"❌ Validazione dataset ML fallita: {e.message}")
-            for err in e.errors:
-                logger.error(f"   {err}")
-            raise
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df = df.set_index("timestamp")
+
+    except Exception as e:
+        logger.error(f"❌ Errore durante la lettura dal database DuckDB: {e}")
+        raise
 
     # Convert datetime index
 
@@ -1595,9 +1488,6 @@ def main():
         description="Addestramento e confronto modelli ML sismici"
     )
     parser.add_argument(
-        "--dataset", type=Path, required=True, help="Percorso al file CSV di input (delta grezzi o già feature-engineered)"
-    )
-    parser.add_argument(
         "--model-output-dir",
         type=Path,
         default=PROJECT_ROOT / "mobile" / "models",
@@ -1637,7 +1527,8 @@ def main():
     logger.info("🚀 Avvio del modulo di training e confronto modelli...")
 
     try:
-        df = load_data(args.dataset)
+        # I dati vengono ora caricati esclusivamente dal database per coerenza.
+        df = load_data_from_db()
         df_train, df_test = split_data_temporal(df, test_size=0.2)
         X_train, y_train = prepare_features(df_train)
         X_test, y_test = prepare_features(df_test)

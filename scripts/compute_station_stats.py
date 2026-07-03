@@ -7,7 +7,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from utils import load_csv_with_checks, setup_logger
+from scripts.utils import load_csv_with_checks, setup_logger
 
 logger = setup_logger("compute_stats")
 

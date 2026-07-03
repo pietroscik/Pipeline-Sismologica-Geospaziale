@@ -13,7 +13,8 @@ from typing import Iterable, Sequence, Tuple
 
 from obspy import UTCDateTime
 from obspy.clients.fdsn import Client
-from utils import load_config, setup_logger
+from tqdm import tqdm
+from scripts.utils import load_config, setup_logger
 
 logger = setup_logger("download_mseed")
 
@@ -402,7 +403,7 @@ def download_waveforms() -> None:
 
         # as_completed restituisce i risultati mano a mano che i thread terminano
         oversize_tasks: list[tuple] = []
-        for future in concurrent.futures.as_completed(futures):
+        for future in tqdm(concurrent.futures.as_completed(futures), total=len(tasks), desc="Download Waveforms"):
             t = futures[future]
             try:
                 res = future.result()

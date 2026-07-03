@@ -14,7 +14,7 @@ from obspy import read
 from obspy.core.trace import Trace
 from obspy.signal.trigger import classic_sta_lta
 from scipy.signal import welch
-from utils import get_project_root, setup_logger
+from scripts.utils import get_project_root, setup_logger
 
 logger = setup_logger("analyze_trace")
 

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 import pyproj
-from utils import (get_project_root, load_config, load_csv_with_checks,
-                   setup_logger)
+from scripts.utils import (get_project_root, load_config, load_csv_with_checks,
+                           setup_logger)
 
 logger = setup_logger("attach_coords")
 

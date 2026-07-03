@@ -312,7 +312,7 @@ def setup_run_directory(run_dir: Path) -> tuple:
 
     Returns:
 
-        Tuple di (data_interim_dir, data_processed_dir, maps_dir)
+        Tuple di (data_interim_dir, data_processed_dir, maps_dir, mobile_analysis_dir)
 
     """
 
@@ -321,6 +321,8 @@ def setup_run_directory(run_dir: Path) -> tuple:
     data_processed_dir = run_dir / "processed"
 
     maps_dir = run_dir / "maps"
+
+    mobile_analysis_dir = run_dir / "mobile_analysis"
 
     # Crea directory
 
@@ -332,9 +334,11 @@ def setup_run_directory(run_dir: Path) -> tuple:
 
     maps_dir.mkdir(parents=True, exist_ok=True)
 
+    mobile_analysis_dir.mkdir(parents=True, exist_ok=True)
+
     logger.info(f"Struttura directory creata: {run_dir}")
 
-    return data_interim_dir, data_processed_dir, maps_dir
+    return data_interim_dir, data_processed_dir, maps_dir, mobile_analysis_dir
 
 
 def main() -> None:
@@ -536,6 +540,12 @@ Esempi di uso:
         help="Simula l'esecuzione senza lanciare i comandi (dry-run)",
     )
 
+    parser.add_argument(
+        "--auto-ingest",
+        action="store_true",
+        help="Esegue automaticamente l'ingestione dei risultati nel database DuckDB al termine della pipeline.",
+    )
+
     args = parser.parse_args()
 
     if args.dry_run:
@@ -565,6 +575,16 @@ Esempi di uso:
         logger.info(f"    - Tipo modello: {args.mobile_model_type}")
 
     logger.info("=" * 60)
+
+    # --- LOGICA DI CONTROLLO FASI ---
+    # Se è richiesto un download, dobbiamo assicurarci che la pipeline parta
+    # da una fase che lo includa (Fase 1).
+    if args.run_download and args.start_phase > 1:
+        new_start_phase = 1 if args.skip_phase0 else 0
+        logger.warning(
+            f"Opzione --run-download rilevata. La fase di partenza è stata forzata da {args.start_phase} a {new_start_phase} per includere il download."
+        )
+        args.start_phase = new_start_phase
 
     scripts_dir = PROJECT_ROOT / "scripts"
 
@@ -833,28 +853,35 @@ Esempi di uso:
 
         else:
 
+            # Se saltiamo la Fase 2, dobbiamo trovare l'output che avrebbe generato.
+            # Priorità 1: --delta-csv esplicito.
+            # Priorità 2: File generato da una precedente esecuzione nella stessa cartella di run.
             if delta_csv:
-
                 out_station_deltas = delta_csv
-
-                out_station_stats = data_processed_dir / "station_stats.csv"
-
-                logger.info(f"[Saltata Fase 2] Utilizzo delta: {delta_csv}")
-                # Validate delta CSV
-                try:
-                    validate_csv_file(
-                        delta_csv, required_columns={"station", "delta_seconds"}
-                    )
-                    logger.info(f"File delta validato: {delta_csv.name}")
-                except Exception as e:
-                    logger.error(f"Validazione file delta fallita: {e}")
-                    raise
-
+                logger.info(f"[Fase 2 saltata] Utilizzo file delta specificato: {delta_csv.name}")
             else:
+                # Cerca i possibili file di output della Fase 2
+                possible_delta_files = [
+                    data_interim_dir / "station_deltas_from_mseed.csv",
+                    data_interim_dir / "station_deltas.csv",
+                ]
+                found_delta_file = next((f for f in possible_delta_files if f.exists()), None)
 
-                logger.error("Per saltare Fase 2, serve --delta-csv.")
+                if found_delta_file:
+                    out_station_deltas = found_delta_file
+                    logger.info(f"[Fase 2 saltata] Rilevato file delta da esecuzione precedente: {out_station_deltas.name}")
+                else:
+                    logger.error("Per saltare la Fase 2, è necessario fornire --delta-csv o avere un file delta da un'esecuzione precedente.")
+                    raise ValueError("Cannot skip Phase 2 without a delta file.")
 
-                raise ValueError("--delta-csv is required to skip Phase 2")
+            # Dobbiamo comunque definire il path per le statistiche, che potrebbe esistere da una run precedente.
+            out_station_stats = data_processed_dir / "station_stats.csv"
+            if not out_station_stats.exists():
+                logger.warning(f"File statistiche ({out_station_stats.name}) non trovato. Potrebbe causare errori nelle fasi successive.")
+            
+            # Validazione del file delta che useremo
+            validate_csv_file(out_station_deltas, required_columns={"station", "delta_seconds"})
+            logger.info(f"File delta per le fasi successive validato: {out_station_deltas.name}")
 
         # FASE 3: Spazializzazione
 
@@ -900,14 +927,13 @@ Esempi di uso:
 
         else:
 
-            if delta_csv:
-
-                out_deltas_spatial = data_processed_dir / "deltas_spatial.csv"
-                if not out_deltas_spatial.exists():
-
-                    logger.warning(
-                        f"Fase 3 saltata. Assicurati che {out_deltas_spatial} esista."
-                    )
+            # Se saltiamo la Fase 3, dobbiamo comunque definire il path del suo output,
+            # che dovrebbe esistere da una run precedente.
+            out_deltas_spatial = data_processed_dir / "deltas_spatial.csv"
+            if not out_deltas_spatial.exists():
+                logger.warning(
+                    f"Fase 3 saltata, ma il suo file di output ({out_deltas_spatial.name}) non è stato trovato. Questo potrebbe causare errori."
+                )
 
         # FASE 4: Output GIS
 
@@ -949,6 +975,10 @@ Esempi di uso:
 
             logger.info("Fase 4 completata.")
 
+        # Definiamo l'input per le analisi successive, basandoci sull'output della Fase 2
+        # Questa variabile ora è sempre definita se la Fase 2 è stata eseguita.
+        input_for_ml = out_station_deltas
+
         # === NOVITÀ: Esecuzione Analisi Mobile (dopo Fase 4) ===
 
         if args.mobile_analysis and args.start_phase <= 4:
@@ -967,7 +997,6 @@ Esempi di uso:
             
             # L'input per il training è il file dei delta, che contiene i dati grezzi
             # necessari per il feature engineering temporale.
-            input_for_ml = out_station_deltas
             if not input_for_ml or not input_for_ml.exists():
                 logger.error(f"File di input per l'analisi ML non trovato: {input_for_ml}")
                 raise FileNotFoundError("Input per ML non disponibile.")
@@ -975,8 +1004,6 @@ Esempi di uso:
             cmd_mobile = [
                 python_exe,
                 str(train_script_path),
-                "--dataset",
-                str(input_for_ml),
                 "--model-output-dir",
                 str(mobile_analysis_dir / "models"),
                 "--model-type",
@@ -987,54 +1014,75 @@ Esempi di uso:
                 cmd_mobile.append("--generate-alerts")
 
             try:
-                run_cmd(cmd_mobile, optional=False, timeout=args.timeout * 3)
+                run_cmd(cmd_mobile, optional=False, timeout=args.timeout * 3) # Rimosso optional=True, questa fase è critica se richiesta.
                 logger.info("✅ Analisi ML completata!")
                 logger.info(f"   Risultati in: {mobile_analysis_dir}")
             except Exception as e:
                 logger.error(f"❌ Analisi mobile fallita: {e}")
-        
-        # --- ESECUZIONE ANALISI INTEGRANTI (di default con --mobile-analysis) ---
+            
+            # --- ESECUZIONE ANALISI INTEGRANTI (ora correttamente sotto --mobile-analysis) ---
 
-        if not args.skip_b_value:
-            logger.info("=" * 60)
-            logger.info("📈 Esecuzione analisi b-value...")
-            b_value_script_path = PROJECT_ROOT / "examples" / "mobile_devices" / "calculate_b_value.py"
-            b_value_report_path = mobile_analysis_dir / "b_value_report.txt"
+            if not args.skip_b_value:
+                logger.info("=" * 60)
+                logger.info("📈 Esecuzione analisi b-value...")
+                b_value_script_path = PROJECT_ROOT / "examples" / "mobile_devices" / "calculate_b_value.py"
+                b_value_report_path = mobile_analysis_dir / "b_value_report.txt"
 
-            # Questa analisi usa il file dei delta grezzi
-            if input_for_ml and input_for_ml.exists():
-                run_cmd([
-                    python_exe,
-                    str(b_value_script_path),
-                    str(input_for_ml),
-                    "--mag-col", "delta_seconds", # Usiamo delta_seconds come proxy della magnitudo
-                    "--output-file", str(b_value_report_path)
-                ], optional=True, timeout=args.timeout)
-                logger.info(f"   Report b-value salvato in: {b_value_report_path}")
+                # Questa analisi usa il file dei delta grezzi
+                if input_for_ml and input_for_ml.exists():
+                    run_cmd([
+                        python_exe,
+                        str(b_value_script_path),
+                        str(input_for_ml),
+                        "--mag-col", "delta_seconds", # Usiamo delta_seconds come proxy della magnitudo
+                        "--output-file", str(b_value_report_path)
+                    ], optional=True, timeout=args.timeout)
+                    logger.info(f"   Report b-value salvato in: {b_value_report_path}")
+                else:
+                    logger.warning("Input per analisi b-value non trovato. Salto.")
             else:
-                logger.warning("Input per analisi b-value non trovato. Salto.")
-        else:
-            logger.info("Analisi b-value saltata su richiesta.")
+                logger.info("Analisi b-value saltata su richiesta.")
 
-        if not args.skip_noise_analysis:
-            logger.info("=" * 60)
-            logger.info("🎧 Esecuzione analisi rumore antropico...")
-            noise_script_path = PROJECT_ROOT / "examples" / "mobile_devices" / "analyze_anthropogenic_noise.py"
-            noise_report_path = mobile_analysis_dir / "anthropogenic_noise_report.txt"
+            if not args.skip_noise_analysis:
+                logger.info("=" * 60)
+                logger.info("🎧 Esecuzione analisi rumore antropico...")
+                noise_script_path = PROJECT_ROOT / "examples" / "mobile_devices" / "analyze_anthropogenic_noise.py"
+                noise_report_path = mobile_analysis_dir / "anthropogenic_noise_report.txt"
 
-            # Anche questa analisi usa il file dei delta grezzi
-            if input_for_ml and input_for_ml.exists():
-                run_cmd([
-                    python_exe,
-                    str(noise_script_path),
-                    str(input_for_ml),
-                    "--output-file", str(noise_report_path)
-                ], optional=True, timeout=args.timeout)
-                logger.info(f"   Report rumore antropico salvato in: {noise_report_path}")
+                # Anche questa analisi usa il file dei delta grezzi
+                if input_for_ml and input_for_ml.exists():
+                    run_cmd([
+                        python_exe,
+                        str(noise_script_path),
+                        str(input_for_ml),
+                        "--output-file", str(noise_report_path)
+                    ], optional=True, timeout=args.timeout)
+                    logger.info(f"   Report rumore antropico salvato in: {noise_report_path}")
+                else:
+                    logger.warning("Input per analisi rumore non trovato. Salto.")
             else:
-                logger.warning("Input per analisi rumore non trovato. Salto.")
-        else:
-            logger.info("Analisi rumore antropico saltata su richiesta.")
+                logger.info("Analisi rumore antropico saltata su richiesta.")
+
+        # === NOVITÀ: Ingestione Automatica nel Database ===
+        if args.auto_ingest:
+            logger.info("")
+            logger.info("=" * 60)
+            logger.info("💾 AVVIO INGESTIONE AUTOMATICA NEL DATABASE")
+            logger.info("=" * 60)
+
+            source_type = "mseed" if args.run_download or (run_dir / "waveforms").exists() else "catalog"
+
+            cmd_ingest = [
+                python_exe,
+                str(PROJECT_ROOT / "ingest_runs_to_db.py"),
+                "--run-id", args.run_name,
+                "--run-name", f"Analisi Pipeline: {args.run_name}",
+                "--run-dir", str(run_dir),
+                "--source-type", source_type,
+            ]
+            run_cmd(cmd_ingest, timeout=args.timeout)
+            logger.info("✅ Ingestione nel database completata con successo!")
+
 
         logger.info("=" * 60)
 
