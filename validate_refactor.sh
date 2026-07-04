@@ -40,4 +40,4 @@ pytest --cov=scripts --cov-report=term -q || { echo "❌ Test falliti"; exit 1; 
 echo -e "\n✅ Test 7/7: Pulizia artefatti..."
 rm -rf runs/test_validazione models/test_validazione
 
-echo -e "\n🎉 TUTTI I TEST PASATI! Refactoring validato."
+echo -e "\n🎉 TUTTI I TEST PASSATI! Refactoring validato."
