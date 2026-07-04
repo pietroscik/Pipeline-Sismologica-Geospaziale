@@ -3,7 +3,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover
+    def tqdm(iterable, **kwargs):
+        return iterable
+    tqdm.write = print  # type: ignore[attr-defined]
 
 def is_valid_run_dir(p: Path) -> bool:
     return p.is_dir() and (
