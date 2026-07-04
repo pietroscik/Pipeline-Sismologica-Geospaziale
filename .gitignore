@@ -12,7 +12,7 @@ __pycache__/
 *.pytest_cache/
 htmlcov/
 .coverage
-
+data\db\seismic_output.duckdb
 
 # Cartelle Dati (non caricare mai dati sensibili o enormi su Git)
 data/raw/

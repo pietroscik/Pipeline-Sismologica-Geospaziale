@@ -1,23 +1,16 @@
-#!/usr/bin/env python3
-"""Feature engineering per modelli ML sismici."""
-
 import numpy as np
 import pandas as pd
 
-def calculate_rolling_b_value(series: pd.Series, window_size: int = 24) -> pd.Series:
+
+def calculate_rolling_b_value(series: pd.Series, window_size: int) -> pd.Series:
     """
     Calcola il b-value su una finestra mobile (rolling).
-    Formula: b = log10(e) / (mean_mag - min_mag_completeness)
-
-    Args:
-        series: Serie Pandas con valori numerici (es. numero di stazioni, magnitudo).
-        window_size: Dimensione della finestra mobile (default: 24).
-
-    Returns:
-        Serie Pandas con il b-value calcolato per ogni punto.
+    Questa funzione deve essere identica a quella in train_risk_model.py.
     """
     b_values = []
-    min_mag_completeness = series[series > 0].min() if not series[series > 0].empty else 0.1
+    min_mag_completeness = (
+        series[series > 0].min() if not series[series > 0].empty else 0.1
+    )
 
     rolling_windows = series.rolling(window=window_size, min_periods=1)
 
@@ -31,5 +24,4 @@ def calculate_rolling_b_value(series: pd.Series, window_size: int = 24) -> pd.Se
                 b_values.append(np.nan)
         else:
             b_values.append(np.nan)
-
-    return pd.Series(b_values, index=series.index).fillna(method='ffill').fillna(0)
+    return pd.Series(b_values, index=series.index).fillna(method="ffill").fillna(0)

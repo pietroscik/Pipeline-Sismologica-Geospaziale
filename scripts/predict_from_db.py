@@ -10,7 +10,7 @@ import joblib
 import numpy as np
 from pathlib import Path
 import pandas as pd
-from feature_engineering import calculate_rolling_b_value
+from scripts.feature_engineering import calculate_rolling_b_value
 from scripts.utils import setup_logger
 
 logger = setup_logger("inference")
@@ -48,11 +48,15 @@ def find_latest_model(model_dir: Path) -> Path | None:
 
 def main():
     parser = argparse.ArgumentParser(description="Esegue inferenza con un modello addestrato.")
-    parser.add_argument("--model-dir", type=Path, default=MODELS_DIR,
+    parser.add_argument("--model-dir", type=Path, default=Path("models"),
                         help=f"Directory contenente i modelli (default: {MODELS_DIR})")
+    parser.add_argument("--model-name", type=str, default=None, help="Alias legacy per compatibilità")
     parser.add_argument("--limit", type=int, default=100,
                         help="Limita il numero di record da processare dal DB (default: 100 più recenti)")
     args = parser.parse_args()
+
+    if args.model_name and args.model_dir == Path("models"):
+        args.model_dir = Path("models") / args.model_name
 
     # Carica dati
     df = load_data_from_db(args.limit)

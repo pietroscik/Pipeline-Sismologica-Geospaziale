@@ -12,10 +12,11 @@ import duckdb
 import numpy as np
 import pandas as pd
 from imblearn.over_sampling import SMOTE
+from sklearn.dummy import DummyClassifier
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 from scripts.data_validator import DataValidationError
-from feature_engineering import calculate_rolling_b_value
+from scripts.feature_engineering import calculate_rolling_b_value
 from scripts.utils import setup_logger
 
 logger = setup_logger("train_risk_model")

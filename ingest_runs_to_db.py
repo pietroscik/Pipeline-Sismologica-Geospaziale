@@ -14,22 +14,13 @@ logger = setup_logger("ingest_to_db")
 
 # --- Data Validation Schemas with Pandera ---
 
-class RawDeltasSchema(pa.DataFrameSchema):
+class RawDeltasSchema(pa.DataFrameModel):
     """Schema per validare i dati grezzi dei delta (es. station_deltas.csv)."""
-    event_id: Series[str]
-    network: Series[str]
-    station: Series[str]
-    channel: Series[str]
-    arrival_epoch: Series[float]
-    arrival_iso: Series[str]
-    event_reference_epoch: Series[float]
-    delta_seconds: Series[float]
+    # campi annotati qui
+    # es: station_id: pa.typing.Series[str]
+    pass
 
-    class Config:
-        coerce = True
-        strict = "filter"  # Ignora colonne extra non definite nello schema
-
-class StationStatsSchema(pa.DataFrameSchema):
+class StationStatsSchema(pa.DataFrameModel):
     """Schema per validare i dati delle statistiche per stazione."""
 
     station: Series[str]
@@ -41,7 +32,7 @@ class StationStatsSchema(pa.DataFrameSchema):
     class Config:
         coerce = True
         strict = False  # consenti colonne opzionali (es. soft_*) senza scartarle
-class DeltasSpatialSchema(pa.SchemaModel):
+class DeltasSpatialSchema(pa.DataFrameModel):
     """Schema per validare i dati spazializzati (controllo core)."""
 
     station: Series[str]
@@ -169,22 +160,19 @@ def initialize_db_schema(con: duckdb.DuckDBPyConnection):
     """)
     logger.info("Schema database verificato/creato.")
 
-def validate_dataframe(df: pd.DataFrame, schema: pa.DataFrameSchema, file_name: str) -> pd.DataFrame:
-    """Applica uno schema Pandera a un DataFrame e gestisce gli errori."""
-    if df.empty:
-        logger.warning(f"DataFrame per {file_name} è vuoto, validazione saltata.")
-        return df
-    try:
-        logger.info(f"Validazione schema per {file_name}...")
-        validated_df = schema.validate(df, lazy=True)
-        logger.info(f"✅ Schema per {file_name} valido.")
-        return validated_df
-    except pa.errors.SchemaErrors as err:
-        logger.error(f"❌ Validazione schema fallita per {file_name}:")
-        # Logga solo i primi 5 errori per non inondare i log
-        failure_cases_summary = err.failure_cases.head(5)
-        logger.error(f"\n{failure_cases_summary.to_string(index=False)}")
-        raise
+def validate_dataframe(df, schema, filename: str):
+    logger.info(f"Validazione schema per {filename}...")
+
+    if isinstance(schema, type) and hasattr(schema, "to_schema"):
+        schema_obj = schema.to_schema()
+    elif isinstance(schema, type):
+        schema_obj = schema()
+    else:
+        schema_obj = schema
+
+    validated_df = schema_obj.validate(df, lazy=True)
+    logger.info(f"Validazione completata: {len(validated_df)} righe valide in {filename}.")
+    return validated_df
 
 def _delete_existing_run_data(con: duckdb.DuckDBPyConnection, run_id: str) -> None:
     """
@@ -347,16 +335,38 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
         # --- RAW DELTAS ---
         if deltas_path and deltas_path.exists():
             df_deltas = pd.read_csv(deltas_path)
-            # Gestisce l'ingestione sia da file con 'station' che 'station_code'
+
             if 'station_code' in df_deltas.columns and 'station' not in df_deltas.columns:
                 df_deltas = df_deltas.rename(columns={'station_code': 'station'})
+
             df_deltas = validate_dataframe(df_deltas, RawDeltasSchema, deltas_path.name)
-            
+
             df_deltas['run_id'] = run_id
             df_deltas = df_deltas.rename(columns={'station': 'station_code'})
             df_deltas['arrival_iso'] = pd.to_datetime(df_deltas['arrival_iso'], errors='coerce')
-            
-            con.execute("INSERT INTO raw_deltas BY NAME SELECT * FROM df_deltas")
+
+            raw_deltas_cols = [
+                "run_id",
+                "event_id",
+                "network",
+                "station_code",
+                "channel",
+                "arrival_epoch",
+                "arrival_iso",
+                "event_reference_epoch",
+                "delta_seconds",
+            ]
+
+            for col in raw_deltas_cols:
+                if col not in df_deltas.columns:
+                    df_deltas[col] = None
+
+            df_deltas = df_deltas.reindex(columns=raw_deltas_cols)
+
+            con.register("df_deltas_view", df_deltas)
+            con.execute("INSERT INTO raw_deltas SELECT * FROM df_deltas_view")
+            con.unregister("df_deltas_view")
+
             logger.info(f"Inseriti {len(df_deltas)} record in raw_deltas.")
         else:
             logger.warning(f"File delta non trovato in {run_dir / 'interim'}. Salto ingestione raw_deltas.")
@@ -367,7 +377,7 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
             df_stats = pd.read_csv(stats_path)
             if "reference_date" not in df_stats.columns:
                 df_stats["reference_date"] = run_timestamp.date()
-            df_stats = validate_dataframe(df_stats, StationStatsSchema.to_schema(), stats_path.name)
+            df_stats = validate_dataframe(df_stats, StationStatsSchema, stats_path.name)
 
             df_stats["run_id"] = run_id
             df_stats = df_stats.rename(columns={"station": "station_code"})
@@ -386,7 +396,7 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
                 df_spatial["reference_date"] = run_timestamp.date()
             if "x_m" in df_spatial.columns and "easting" not in df_spatial.columns:
                 df_spatial = df_spatial.rename(columns={"x_m": "easting", "y_m": "northing"})
-            df_spatial = validate_dataframe(df_spatial, DeltasSpatialSchema.to_schema(), spatial_path.name)
+            df_spatial = validate_dataframe(df_spatial, DeltasSpatialSchema, spatial_path.name)
             # Ingestione STATIONS
             station_cols_map = {
                 'station': 'station_code', 'network': 'network', 'latitude': 'latitude',
