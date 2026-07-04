@@ -29,8 +29,8 @@ def load_data_from_db(limit: int = None) -> pd.DataFrame:
 
     con = duckdb.connect(database=str(DUCKDB_PATH), read_only=True)
     query = "SELECT * FROM ml_features_ready_view ORDER BY timestamp DESC"
-    if limit:
-        query += f" LIMIT {limit}"
+    if limit is not None:
+        query += f" LIMIT {int(limit)}"
     df = con.execute(query).fetch_df()
     con.close()
     logger.info(f"Caricati {len(df)} record.")
