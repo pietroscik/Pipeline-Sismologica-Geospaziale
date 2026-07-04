@@ -15,7 +15,7 @@ from imblearn.over_sampling import SMOTE
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 from scripts.data_validator import DataValidationError
-from scripts.feature_engineering import calculate_rolling_b_value
+from feature_engineering import calculate_rolling_b_value
 from scripts.utils import setup_logger
 
 logger = setup_logger("train_risk_model")
