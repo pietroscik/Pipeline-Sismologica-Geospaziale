@@ -379,8 +379,11 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
         spatial_path = run_dir / "processed" / "deltas_spatial.csv"
         if spatial_path.exists():
             df_spatial = pd.read_csv(spatial_path)
+            if "reference_date" not in df_spatial.columns:
+                df_spatial["reference_date"] = run_timestamp.date()
+            if "x_m" in df_spatial.columns and "easting" not in df_spatial.columns:
+                df_spatial = df_spatial.rename(columns={"x_m": "easting", "y_m": "northing"})
             df_spatial = validate_dataframe(df_spatial, DeltasSpatialSchema.to_schema(), spatial_path.name)
-
             # Ingestione STATIONS
             station_cols_map = {
                 'station': 'station_code', 'network': 'network', 'latitude': 'latitude',
