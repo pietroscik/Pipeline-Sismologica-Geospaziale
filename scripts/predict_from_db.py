@@ -37,13 +37,12 @@ def load_data_from_db(limit: int = None) -> pd.DataFrame:
     return df
 
 
-def find_latest_model(model_dir: Path) -> Path | None:
-    """Trova il file del modello più recente (.pkl o .pth) in una directory."""
-    candidates = list(model_dir.glob("*.pkl")) + list(model_dir.glob("*.pth"))
+def find_latest_model(model_dir: Path):
+    """Trova il file del modello più recente (.pkl) in una directory."""
+    candidates = list(model_dir.glob("*.pkl"))
     if not candidates:
         return None
-    latest_model = max(candidates, key=lambda p: p.stat().st_mtime)
-    return latest_model
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def main():
