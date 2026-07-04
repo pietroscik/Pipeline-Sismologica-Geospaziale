@@ -31,22 +31,16 @@ class RawDeltasSchema(pa.SchemaModel):
 
 class StationStatsSchema(pa.SchemaModel):
     """Schema per validare i dati delle statistiche per stazione."""
+
     station: Series[str]
-    reference_date: Series[str]
     base_count: Series[int]
     base_mean: Series[float]
     base_std: Series[float]
     base_median: Series[float]
-    soft_count: Series[int]
-    soft_mean: Series[float]
-    soft_std: Series[float]
-    soft_median: Series[float]
-    soft_minus_base_mean: Series[float]
 
     class Config:
         coerce = True
-        strict = "filter"
-
+        strict = False  # consenti colonne opzionali (es. soft_*) senza scartarle
 class DeltasSpatialSchema(pa.SchemaModel):
     """Schema per validare i dati spazializzati (controllo core)."""
     station: Series[str]
