@@ -17,6 +17,7 @@ htmlcov/
 # Cartelle Dati (non caricare mai dati sensibili o enormi su Git)
 data/raw/
 data/interim/
+data/db/
 data/processed/
 examples/mobile_devices/output_eventi_georeferenziati.csv
 examples/mobile_devices/scoperte_automatiche.csv
@@ -24,6 +25,7 @@ examples/mobile_devices/scoperte_automatiche.csv
 # Mappe, GIS e risultati generati
 results/
 runs/
+models/
 
 # File di log della pipeline
 logs/

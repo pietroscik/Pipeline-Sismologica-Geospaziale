@@ -28,7 +28,7 @@ Link a issue correlate: #
 - [ ] Ho eseguito i test locali con pytest tests/
 - [ ] Ho verificato il linting con flake8 .
 - [ ] Ho formattato il codice con black .
-- [ ] Ho aggiornato la documentazione (se necessario)
+- [ ] Ho aggiornato la documentazione (es. `README.md`, docstrings, `docs/`) (se necessario)
 - [ ] Ho aggiornato il CHANGELOG.md (se applicabile)
 - [ ] Ho aggiunto/aggiornato i test per le nuove funzionalita
 

@@ -9,14 +9,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
-from scripts.utils import load_csv_with_checks, setup_logger, load_config
-
-import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-
-# L'hack su sys.path è stato completamente rimosso!
-from mobile.data_validator import DataValidationError, validate_csv_file
 from scripts.utils import setup_logger
 
 logger = setup_logger("orchestrator")
@@ -205,72 +199,6 @@ def resolve_input_path(
     return root_candidate
 
 
-def validate_csv_input(
-    path: Optional[Path],
-    required_columns: Optional[set] = None,
-    path_description: str = "CSV file",
-) -> Optional[pd.DataFrame]:
-    """
-
-    Valida un file CSV input e restituisce il DataFrame.
-
-
-
-    Args:
-
-        path: Path al file CSV
-
-        required_columns: Colonne richieste (opzionale)
-
-        path_description: Descrizione del file per messaggi di errore
-
-
-
-    Returns:
-
-        DataFrame validato o None se path è None
-
-
-
-    Raises:
-
-        DataValidationError: Se la validazione fallisce
-
-        FileNotFoundError: Se il file non esiste
-
-    """
-
-    if path is None:
-
-        return None
-
-    try:
-
-        df = validate_csv_file(path, required_columns=required_columns)
-
-        logger.info(f"{path_description} validato: {path.name}")
-
-        return df
-
-    except DataValidationError as e:
-
-        logger.error(
-            f"Validazione fallita per {path_description} ({path}): {e.message}"
-        )
-
-        for err in e.errors:
-
-            logger.error(f"  - {err}")
-
-        raise
-
-    except Exception as e:
-
-        logger.error(f"Errore caricamento {path_description} ({path}): {e}")
-
-        raise
-
-
 def cleanup_run_directory(run_dir: Path) -> None:
     """
 
@@ -312,7 +240,7 @@ def setup_run_directory(run_dir: Path) -> tuple:
 
     Returns:
 
-        Tuple di (data_interim_dir, data_processed_dir, maps_dir, mobile_analysis_dir)
+        Tuple di (data_interim_dir, data_processed_dir, maps_dir)
 
     """
 
@@ -321,8 +249,6 @@ def setup_run_directory(run_dir: Path) -> tuple:
     data_processed_dir = run_dir / "processed"
 
     maps_dir = run_dir / "maps"
-
-    mobile_analysis_dir = run_dir / "mobile_analysis"
 
     # Crea directory
 
@@ -334,11 +260,9 @@ def setup_run_directory(run_dir: Path) -> tuple:
 
     maps_dir.mkdir(parents=True, exist_ok=True)
 
-    mobile_analysis_dir.mkdir(parents=True, exist_ok=True)
-
     logger.info(f"Struttura directory creata: {run_dir}")
 
-    return data_interim_dir, data_processed_dir, maps_dir, mobile_analysis_dir
+    return data_interim_dir, data_processed_dir, maps_dir
 
 
 def main() -> None:
@@ -377,25 +301,13 @@ Esempi di uso:
 
   python run_pipeline.py --run-name test \
 
-    --events-csv dati/eventi.csv \
+    --events-csv data/raw/eventi.csv \
 
-    --picks-csv dati/picks.csv \
+    --picks-csv data/raw/picks.csv \
 
-    --stations-csv dati/stazioni.csv
+    --stations-csv data/raw/stazioni.csv
 
-
-
-  # Esecuzione con analisi mobile e generazione allarmi
-
-  python run_pipeline.py --run-name analisi_complete \
-
-    --mobile-analysis \
-
-    --mobile-min-stations 18 \
-
-    --mobile-alert-threshold 0.7
-
-""",
+"""
     )
 
     # Aggiungiamo manualmente l'argomento --help
@@ -469,54 +381,6 @@ Esempi di uso:
         "--download-end", type=str, help="Data fine download (YYYY-MM-DD)"
     )
 
-    # === NOVITÀ: Opzioni per analisi mobile e allarmi ===
-
-    parser.add_argument(
-        "--mobile-analysis",
-        action="store_true",
-        help="Esegui analisi mobile e generazione allarmi dopo la pipeline principale",
-    )
-
-    parser.add_argument(
-        "--mobile-min-stations",
-        type=int,
-        default=18,
-        help="Soglia stazioni per allarme mobile (default: 18)",
-    )
-
-    parser.add_argument(
-        "--mobile-alert-threshold",
-        type=float,
-        default=0.7,
-        help="Soglia indice di rischio per allarme mobile (default: 0.7)",
-    )
-
-    parser.add_argument(
-        "--mobile-model-type",
-        choices=["compare", "xgboost", "random_forest", "transformer"],
-        default="compare",
-        help="Tipo di modello ML per analisi mobile (default: compare)",
-    )
-
-    # --- MODIFICA: Le analisi sono di default, si possono saltare ---
-    parser.add_argument(
-        "--skip-b-value",
-        action="store_true",
-        help="Salta l'analisi del b-value (eseguita di default con --mobile-analysis)."
-    )
-
-    parser.add_argument(
-        "--skip-noise-analysis",
-        action="store_true",
-        help="Salta l'analisi del rumore antropico (eseguita di default con --mobile-analysis)."
-    )
-    
-    parser.add_argument(
-        "--mobile-generate-alerts",
-        action="store_true",
-        help="Genera allarmi attivi durante l'analisi mobile",
-    )
-
     # Robustezza: timeout per comandi
 
     parser.add_argument(
@@ -564,16 +428,6 @@ Esempi di uso:
 
     logger.info(f"  Timeout: {args.timeout}s")
 
-    if args.mobile_analysis:
-
-        logger.info(f"  Analisi Mobile: ATTIVA")
-
-        logger.info(f"    - Soglia stazioni: {args.mobile_min_stations}")
-
-        logger.info(f"    - Soglia rischio: {args.mobile_alert_threshold}")
-
-        logger.info(f"    - Tipo modello: {args.mobile_model_type}")
-
     logger.info("=" * 60)
 
     # --- LOGICA DI CONTROLLO FASI ---
@@ -594,7 +448,7 @@ Esempi di uso:
 
     # Setup directory structure
 
-    data_interim_dir, data_processed_dir, maps_dir, mobile_analysis_dir = setup_run_directory(run_dir)
+    data_interim_dir, data_processed_dir, maps_dir = setup_run_directory(run_dir)
 
     # Track files for cleanup
 
@@ -647,17 +501,6 @@ Esempi di uso:
                     "Attenzione: --stations-csv non specificato. Fase 0 saltata."
                 )
             else:
-                # Validate stations CSV
-                try:
-                    validate_csv_file(
-                        stations_csv,
-                        required_columns={"station", "latitude", "longitude"},
-                    )
-                    logger.info(f"File stazioni validato: {stations_csv.name}")
-                except Exception as e:
-                    logger.error(f"Validazione file stazioni fallita: {e}")
-                    raise
-
                 run_cmd(
                     [
                         python_exe,
@@ -798,17 +641,6 @@ Esempi di uso:
                         "Events CSV and Picks CSV are required for Phase 2"
                     )
 
-                # Validate input CSV files
-                try:
-                    validate_csv_file(events_csv, required_columns={"event_id", "time"})
-                    validate_csv_file(
-                        picks_csv, required_columns={"pick_id", "event_id", "phase"}
-                    )
-                    logger.info(f"File eventi e picks validati")
-                except Exception as e:
-                    logger.error(f"Validazione input Fase 2 fallita: {e}")
-                    raise
-
                 cmd_step1 = [
                     python_exe,
                     scripts_dir / "prepare_science_deltas.py",
@@ -880,7 +712,6 @@ Esempi di uso:
                 logger.warning(f"File statistiche ({out_station_stats.name}) non trovato. Potrebbe causare errori nelle fasi successive.")
             
             # Validazione del file delta che useremo
-            validate_csv_file(out_station_deltas, required_columns={"station", "delta_seconds"})
             logger.info(f"File delta per le fasi successive validato: {out_station_deltas.name}")
 
         # FASE 3: Spazializzazione
@@ -896,16 +727,6 @@ Esempi di uso:
             if not stations_csv:
                 logger.error("Per Fase 3 serve --stations-csv.")
                 raise ValueError("--stations-csv is required for Phase 3")
-
-            # Validate stations CSV has required columns
-            try:
-                validate_csv_file(
-                    stations_csv, required_columns={"station", "latitude", "longitude"}
-                )
-                logger.info(f"File stazioni validato per Fase 3")
-            except Exception as e:
-                logger.error(f"Validazione stazioni Fase 3 fallita: {e}")
-                raise
 
             run_cmd(
                 [
@@ -975,94 +796,6 @@ Esempi di uso:
 
             logger.info("Fase 4 completata.")
 
-        # Definiamo l'input per le analisi successive, basandoci sull'output della Fase 2
-        # Questa variabile ora è sempre definita se la Fase 2 è stata eseguita.
-        input_for_ml = out_station_deltas
-
-        # === NOVITÀ: Esecuzione Analisi Mobile (dopo Fase 4) ===
-
-        if args.mobile_analysis and args.start_phase <= 4:
-
-            logger.info("")
-
-            logger.info("=" * 60)
-
-            logger.info("📱 AVVIO ANALISI MOBILE + ALLARMI")
-
-            logger.info("=" * 60)
-
-            # NUOVA LOGICA: Chiama direttamente lo script di training ML
-            # passando l'output della pipeline corrente come input.
-            train_script_path = scripts_dir / "train_risk_model.py"            
-            
-            # L'input per il training è il file dei delta, che contiene i dati grezzi
-            # necessari per il feature engineering temporale.
-            if not input_for_ml or not input_for_ml.exists():
-                logger.error(f"File di input per l'analisi ML non trovato: {input_for_ml}")
-                raise FileNotFoundError("Input per ML non disponibile.")
-
-            cmd_mobile = [
-                python_exe,
-                str(train_script_path),
-                "--model-output-dir",
-                str(mobile_analysis_dir / "models"),
-                "--model-type",
-                args.mobile_model_type,
-            ]
-
-            if args.mobile_generate_alerts:
-                cmd_mobile.append("--generate-alerts")
-
-            try:
-                run_cmd(cmd_mobile, optional=False, timeout=args.timeout * 3) # Rimosso optional=True, questa fase è critica se richiesta.
-                logger.info("✅ Analisi ML completata!")
-                logger.info(f"   Risultati in: {mobile_analysis_dir}")
-            except Exception as e:
-                logger.error(f"❌ Analisi mobile fallita: {e}")
-            
-            # --- ESECUZIONE ANALISI INTEGRANTI (ora correttamente sotto --mobile-analysis) ---
-
-            if not args.skip_b_value:
-                logger.info("=" * 60)
-                logger.info("📈 Esecuzione analisi b-value...")
-                b_value_script_path = PROJECT_ROOT / "examples" / "mobile_devices" / "calculate_b_value.py"
-                b_value_report_path = mobile_analysis_dir / "b_value_report.txt"
-
-                # Questa analisi usa il file dei delta grezzi
-                if input_for_ml and input_for_ml.exists():
-                    run_cmd([
-                        python_exe,
-                        str(b_value_script_path),
-                        str(input_for_ml),
-                        "--mag-col", "delta_seconds", # Usiamo delta_seconds come proxy della magnitudo
-                        "--output-file", str(b_value_report_path)
-                    ], optional=True, timeout=args.timeout)
-                    logger.info(f"   Report b-value salvato in: {b_value_report_path}")
-                else:
-                    logger.warning("Input per analisi b-value non trovato. Salto.")
-            else:
-                logger.info("Analisi b-value saltata su richiesta.")
-
-            if not args.skip_noise_analysis:
-                logger.info("=" * 60)
-                logger.info("🎧 Esecuzione analisi rumore antropico...")
-                noise_script_path = PROJECT_ROOT / "examples" / "mobile_devices" / "analyze_anthropogenic_noise.py"
-                noise_report_path = mobile_analysis_dir / "anthropogenic_noise_report.txt"
-
-                # Anche questa analisi usa il file dei delta grezzi
-                if input_for_ml and input_for_ml.exists():
-                    run_cmd([
-                        python_exe,
-                        str(noise_script_path),
-                        str(input_for_ml),
-                        "--output-file", str(noise_report_path)
-                    ], optional=True, timeout=args.timeout)
-                    logger.info(f"   Report rumore antropico salvato in: {noise_report_path}")
-                else:
-                    logger.warning("Input per analisi rumore non trovato. Salto.")
-            else:
-                logger.info("Analisi rumore antropico saltata su richiesta.")
-
         # === NOVITÀ: Ingestione Automatica nel Database ===
         if args.auto_ingest:
             logger.info("")
@@ -1105,20 +838,6 @@ Esempi di uso:
     except FileNotFoundError as exc:
 
         logger.error(f"❌ File non trovato: {exc}")
-
-        if args.cleanup_on_error:
-
-            cleanup_run_directory(run_dir)
-
-        raise
-
-    except DataValidationError as exc:
-
-        logger.error(f"❌ Validazione dati fallita: {exc.message}")
-
-        for err in exc.errors:
-
-            logger.error(f"   {err}")
 
         if args.cleanup_on_error:
 
@@ -1169,9 +888,6 @@ Esempi di uso:
             cleanup_run_directory(run_dir)
 
         raise
-
-    # pandas imported at module level
-
 
 if __name__ == "__main__":
     try:

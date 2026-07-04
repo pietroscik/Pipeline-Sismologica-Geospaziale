@@ -17,7 +17,7 @@ st.set_page_config(page_title="Pipeline Sismologica", page_icon="🌋", layout="
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-EXAMPLE_LEGACY_DIR = PROJECT_ROOT / "examples" / "mobile_devices"
+EXAMPLE_LEGACY_DIR = PROJECT_ROOT / "examples" / "catalog"  # aggiornato
 
 
 @st.cache_data(show_spinner=False)
@@ -254,84 +254,6 @@ with st.sidebar:
 
         skip_phase4 = st.checkbox("Salta Fase 4", value=False)
 
-    # NOVITA: Analisi Mobile e Allarmi
-
-    st.subheader("📱 Analisi Mobile e Allarmi")
-
-    mobile_analysis_enabled = st.checkbox(
-        "Abilita Analisi Mobile",
-        value=False,
-        help="Esegui analisi mobile e generazione allarmi dopo la pipeline principale",
-    )
-
-    if mobile_analysis_enabled:
-
-        mobile_min_stations = st.slider(
-            "Minimo Stazioni per Allarme",
-            min_value=1,
-            max_value=50,
-            value=18,
-            help="Soglia minima di stazioni per generare allarmi (default: 18)",
-        )
-
-        mobile_alert_threshold = st.slider(
-            "Soglia Rischio per Allarme",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.7,
-            step=0.01,
-            format="%.2f",
-            help="Soglia di probabilita per generare allarmi (default: 0.7)",
-        )
-
-        mobile_model_type = st.selectbox(
-            "Tipo Modello ML",
-            options=["compare", "xgboost", "random_forest", "transformer"],
-            index=0,
-            help="Seleziona il tipo di modello ML. Scegliendo 'compare' verranno addestrati tutti e verrà salvato automaticamente il migliore.",
-        )
-
-        mobile_generate_alerts = st.checkbox(
-            "Genera Allarmi Attivi",
-            value=True,
-            help="Genera allarmi attivi (email, webhook, SMS) durante l'analisi mobile",
-        )
-
-    st.subheader("🔮 Predizione Live (Inferenza)")
-
-    live_predict_enabled = st.checkbox("Esegui Predizione Live")
-
-    if live_predict_enabled:
-
-        # Cerca i modelli disponibili
-
-        model_dir = PROJECT_ROOT / "mobile" / "models"
-
-        available_models = (
-            [m.name for m in model_dir.glob("*.pkl")]
-            + [m.name for m in model_dir.glob("*.pth")]
-            if model_dir.exists()
-            else []
-        )
-
-        selected_model = st.selectbox(
-            "Seleziona Modello Addestrato",
-            options=available_models,
-            help="Scegli il modello da usare per calcolare il rischio in tempo reale.",
-        )
-
-        live_data_csv = st.text_input(
-            "File Dati (CSV)", value=str(EXAMPLE_LEGACY_DIR / "dataset_ml_sismico.csv")
-        )
-
-        live_threshold = st.slider(
-            "Soglia Allarme Live", min_value=0.0, max_value=1.0, value=0.7, step=0.01
-        )
-
-        live_predict_button = st.button(
-            "🔮 Calcola Rischio Ora", use_container_width=True
-        )
-
     st.markdown("---")
 
     run_button = st.button(
@@ -380,13 +302,6 @@ with st.sidebar:
 
 # Navigazione
 
-col_nav1, col_nav2 = st.columns([1, 4])
-
-with col_nav1:
-
-    if st.button("🚨 Dashboard Allarmi"):
-        st.switch_page("alerts_dashboard")
-
 
 # LOGICA DI ESECUZIONE
 
@@ -430,22 +345,6 @@ if run_button:
 
         cmd_pipeline.append("--skip-phase4")
 
-    # NOVITA: Aggiungi parametri analisi mobile
-
-    if mobile_analysis_enabled:
-
-        cmd_pipeline.append("--mobile-analysis")
-
-        cmd_pipeline.extend(["--mobile-min-stations", mobile_min_stations])
-
-        cmd_pipeline.extend(["--mobile-alert-threshold", mobile_alert_threshold])
-
-        cmd_pipeline.extend(["--mobile-model-type", mobile_model_type])
-
-        if mobile_generate_alerts:
-
-            cmd_pipeline.append("--mobile-generate-alerts")
-
     # Aggiungi parametri per il download se abilitato
     if run_download and not skip_phase1:
         cmd_pipeline.append("--run-download")
@@ -462,50 +361,6 @@ if run_button:
         st.balloons()
     else:
         status_msg.error(f"Errore durante l'esecuzione della pipeline per la run **{run_name}**. Controlla i log qui sopra. (Codice: {return_code})")
-
-
-if (
-    "live_predict_enabled" in locals()
-    and live_predict_enabled
-    and "live_predict_button" in locals()
-    and live_predict_button
-    and selected_model
-):
-
-    cmd_live = [
-        sys.executable,
-        PROJECT_ROOT / "scripts" / "predict_live.py",
-        "--model",
-        PROJECT_ROOT / "mobile" / "models" / selected_model,
-        "--data",
-        live_data_csv,
-        "--threshold",
-        str(live_threshold),
-    ]
-
-    with st.spinner("🔮 Calcolo del rischio in corso..."):
-
-        try:
-
-            res_live = subprocess.run(
-                cmd_live, capture_output=True, text=True, check=True
-            )
-
-            # Estrai la probabilità dall'output per visualizzarla
-
-            output_lines = res_live.stdout.splitlines() + res_live.stderr.splitlines()
-
-            st.success("Analisi in Tempo Reale completata!")
-
-            with st.expander("Mostra Dettagli Predizione Live", expanded=True):
-
-                st.code("\n".join(output_lines[-15:]))
-
-        except subprocess.CalledProcessError as e:
-
-            st.error("Errore durante l'inferenza!")
-
-            st.code(e.stderr)
 
 
 # VISUALIZZAZIONE RISULTATI

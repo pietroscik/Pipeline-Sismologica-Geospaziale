@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tqdm import tqdm
+
 def is_valid_run_dir(p: Path) -> bool:
     return p.is_dir() and (
         (p / "processed").exists()
@@ -29,9 +31,10 @@ def main():
         return 0
 
     failures = []
-    for run_dir in run_dirs:
+    for run_dir in tqdm(run_dirs, desc="Ingesting runs", unit="run"):
         run_id = run_dir.name
         run_name = f"Analisi Pipeline: {run_id}"
+        tqdm.write(f"\n[INGEST] {run_id}")
 
         cmd = [
             str(args.python_exe),
@@ -42,15 +45,18 @@ def main():
             "--source-type", args.source_type,
         ]
 
-        print(f"\n[INGEST] {run_id}")
-        result = subprocess.run(cmd, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             failures.append(run_id)
-            print(f"[ERROR] {run_id} (exit={result.returncode})")
+            tqdm.write(f"[ERROR] Ingestione fallita per {run_id} (exit code: {result.returncode})")
+            if result.stdout:
+                tqdm.write("--- STDOUT ---\n" + result.stdout)
+            if result.stderr:
+                tqdm.write("--- STDERR ---\n" + result.stderr)
             if args.stop_on_error:
                 break
         else:
-            print(f"[OK] {run_id}")
+            tqdm.write(f"[OK] {run_id}")
 
     print("\n=== RIEPILOGO ===")
     print(f"Totale run: {len(run_dirs)}")

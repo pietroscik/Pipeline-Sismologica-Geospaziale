@@ -13,168 +13,47 @@ import numpy as np
 import pandas as pd
 from imblearn.over_sampling import SMOTE
 
-# Aggiungiamo la root del progetto e la cartella mobile al path per risolvere le dipendenze
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-sys.path.insert(0, str(PROJECT_ROOT))
-
-sys.path.insert(0, str(PROJECT_ROOT / "mobile"))
-
-from mobile.alert_system import AlertSystem, get_alert_system
-from mobile.data_validator import (DataValidationError, validate_csv_file,
-                            validate_data)
+from scripts.data_validator import DataValidationError
+from scripts.feature_engineering import calculate_rolling_b_value
 from scripts.utils import setup_logger
 
-# Configura logging
-
-try:
-    logger = setup_logger(__name__)
-
-except Exception:
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-
-    logger = logging.getLogger(__name__)
-
+logger = setup_logger("train_risk_model")
 logger.setLevel(logging.INFO)
 
-
-# Costanti
-
-DEFAULT_MODEL_TYPE = "xgboost"
-
-DEFAULT_MIN_STATIONS = 18
-
-DEFAULT_ALERT_THRESHOLD = 0.7
 DUCKDB_PATH = PROJECT_ROOT / "data" / "db" / "seismic_output.duckdb"
+def load_data_from_db(db_path: Path | str = DUCKDB_PATH):
+    """Carica i dati per il training, cercando la fonte migliore disponibile."""
+    db_file = str(db_path)
+    logger.info(f"📖 Caricamento dataset dal database DuckDB: {db_file}")
 
+    if not Path(db_file).exists():
+        logger.error(f"Database non trovato in {db_file}. Eseguire prima la pipeline con --auto-ingest.")
+        raise FileNotFoundError(f"Database non trovato: {db_file}")
 
-def calculate_rolling_b_value(series: pd.Series, window_size: int) -> pd.Series:
-    """
-    Calcola il b-value su una finestra mobile (rolling).
-
-    Args:
-        series: Serie Pandas di "magnitudo" (proxy, es. numero di stazioni).
-        window_size: Dimensione della finestra per il calcolo (es. 24 per 24 ore).
-
-    Returns:
-        Serie Pandas con il b-value calcolato per ogni punto.
-    """
-    b_values = []
-    # Usiamo il metodo di Aki-Utsu: b = log10(e) / (mean_mag - min_mag_completeness)
-    # Semplifichiamo assumendo che la magnitudo minima di completezza sia vicina alla minima osservata.
-    min_mag_completeness = series[series > 0].min() if not series[series > 0].empty else 0.1
-
-    rolling_windows = series.rolling(window=window_size, min_periods=1)
-
-    for window in rolling_windows:
-        if window.mean() > min_mag_completeness:
-            # Evita divisione per zero
-            denominator = window.mean() - min_mag_completeness
-            if denominator > 0:
-                b_value = np.log10(np.e) / denominator
-                b_values.append(b_value)
-            else:
-                b_values.append(np.nan)
-        else:
-            b_values.append(np.nan)
-
-    return pd.Series(b_values, index=series.index).fillna(method='ffill').fillna(0)
-
-def load_data_from_db() -> pd.DataFrame:
-    """
-    Carica il dataset per il training esclusivamente dal database DuckDB.
-    Utilizza la vista 'ml_features_ready_view' come unica fonte di verità.
-    """
-    logger.info(f"📖 Caricamento dataset dal database DuckDB: {DUCKDB_PATH}")
-    if not DUCKDB_PATH.exists():
-        raise FileNotFoundError(
-            f"File database DuckDB non trovato: {DUCKDB_PATH}. "
-            "Assicurarsi di aver eseguito la pipeline di ingestione dati."
-        )
-
+    con = duckdb.connect(db_file, read_only=True)
     try:
-        con = duckdb.connect(database=str(DUCKDB_PATH), read_only=True)
-        logger.info("   - Esecuzione query sulla vista 'ml_features_ready_view'...")
-        df = con.execute("SELECT * FROM ml_features_ready_view").fetch_df()
-        con.close()
+        # Controlla quali tabelle/viste sono disponibili
+        tables_and_views = {row[0] for row in con.execute("SHOW TABLES").fetchall()}
 
-        if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            df = df.set_index("timestamp")
+        candidates = ["ml_features_ready_view", "ml_features_timeseries"]
+        source_name = next((name for name in candidates if name in tables_and_views), None)
 
-    except Exception as e:
+        if source_name is None:
+            logger.error("Nessuna tabella o vista ML trovata nel database.")
+            logger.error(f"   - Attese: {', '.join(candidates)}")
+            logger.error(f"   - Disponibili: {sorted(tables_and_views)}")
+            raise RuntimeError("Dati per il training non trovati nel database.")
+
+        logger.info(f"   - Esecuzione query sulla sorgente '{source_name}'...")
+        df = con.execute(f"SELECT * FROM {source_name}").fetch_df()
+        logger.info(f"✅ Dataset caricato con successo: {len(df)} righe.")
+        return df
+    except duckdb.Error as e:
         logger.error(f"❌ Errore durante la lettura dal database DuckDB: {e}")
         raise
-
-    # Convert datetime index
-
-    if "Tempo" in df.columns:
-
-        df["Tempo"] = pd.to_datetime(df["Tempo"])
-
-        df.set_index("Tempo", inplace=True)
-
-    elif df.index.name is None or df.index.name == "Unnamed: 0":
-
-        # Try to find datetime column
-
-        datetime_cols = [
-            col for col in df.columns if "time" in col.lower() or "tempo" in col.lower()
-        ]
-
-        if datetime_cols:
-
-            df[datetime_cols[0]] = pd.to_datetime(df[datetime_cols[0]])
-
-            df.set_index(datetime_cols[0], inplace=True)
-
-        else:
-
-            logger.warning("Nessuna colonna temporale trovata, uso indice numerico")
-
-    # Sort by index
-
-    df.sort_index(inplace=True)
-
-    # Check for empty DataFrame
-
-    if len(df) == 0:
-
-        raise DataValidationError(
-            "Dataset e' vuoto", errors=["Dataset contains no rows"]
-        )
-
-    # Check for valid target values
-
-    if "Target_Allarme" not in df.columns:
-
-        raise DataValidationError(
-            "Colonna Target_Allarme non trovata", errors=["Target column missing"]
-        )
-
-    # Check class balance
-
-    target_counts = df["Target_Allarme"].value_counts()
-
-    logger.info(f"✅ Caricati {len(df)} record con {len(df.columns)} feature")
-
-    logger.info(f"   Distribuzione target: {dict(target_counts)}")
-
-    # Warn if dataset is too small
-
-    if len(df) < 100:
-
-        logger.warning(
-            f"Dataset molto piccolo ({len(df)} record), risultati potrebbero non essere affidabili"
-        )
-
-    return df
-
+    finally:
+        con.close()
 
 def split_data_temporal(
     df: pd.DataFrame, test_size: float = 0.2, random_state: int = 42
@@ -202,18 +81,12 @@ def split_data_temporal(
     """
 
     if len(df) == 0:
-
-        raise DataValidationError(
-            "Dataset vuoto, impossibile suddividere", errors=["Empty dataset"]
-        )
+        raise ValueError("Dataset vuoto, impossibile suddividere")
 
     # Check test_size is valid
 
     if not 0 < test_size < 1:
-
-        raise ValueError(
-            f"test_size deve essere compreso tra 0 e 1, ricevuto: {test_size}"
-        )
+        raise ValueError(f"test_size deve essere compreso tra 0 e 1, ricevuto: {test_size}")
 
     # Calcola il punto di split
 
@@ -221,12 +94,7 @@ def split_data_temporal(
 
     if split_idx == 0:
 
-        raise DataValidationError(
-            "Dataset troppo piccolo per suddivisione",
-            errors=[
-                f"Dataset has only {len(df)} rows, need at least {int(1/test_size)}"
-            ],
-        )
+        raise ValueError(f"Dataset troppo piccolo per suddivisione. Righe: {len(df)}, test_size: {test_size}")
 
     # Controllo bilanciamento classi per serie temporali fortemente sbilanciate
 
@@ -261,12 +129,10 @@ def split_data_temporal(
     # Validate splits
 
     if len(train) == 0:
-
-        raise DataValidationError("Train set vuoto dopo split")
+        raise ValueError("Train set vuoto dopo split")
 
     if len(test) == 0:
-
-        raise DataValidationError("Test set vuoto dopo split")
+        raise ValueError("Test set vuoto dopo split")
 
     logger.info(f"📚 Train: {len(train)} record, Test: {len(test)} record")
 
@@ -305,11 +171,7 @@ def prepare_features(
     # Check target column exists
 
     if target_column not in df.columns:
-
-        raise DataValidationError(
-            f"Colonna target '{target_column}' non trovata",
-            errors=[f"Target column '{target_column}' not found in DataFrame"],
-        )
+        raise ValueError(f"Colonna target '{target_column}' non trovata")
 
     # Aggiungi colonne da escludere
 
@@ -320,11 +182,7 @@ def prepare_features(
     feature_columns = [col for col in df.columns if col not in exclude]
 
     if len(feature_columns) == 0:
-
-        raise DataValidationError(
-            "Nessuna feature disponibile dopo esclusione colonne",
-            errors=["No features available after excluding target and drop columns"],
-        )
+        raise ValueError("Nessuna feature disponibile dopo esclusione colonne")
 
     X = df[feature_columns].copy()
 
@@ -442,17 +300,12 @@ def train_xgboost(
     # Check for empty data
 
     if len(X_train) == 0 or len(y_train) == 0:
-
-        raise DataValidationError("Dati di training vuoti")
+        raise ValueError("Dati di training vuoti")
 
     # Check for single class
 
     if len(y_train.unique()) < 2:
-
-        raise DataValidationError(
-            "Solo una classe nel target",
-            errors=[f"Target has only one class: {y_train.unique()}"],
-        )
+        raise ValueError(f"Solo una classe nel target: {y_train.unique()}")
 
     # Converte in DMatrix (formato ottimizzato per XGBoost)
 
@@ -599,17 +452,12 @@ def train_random_forest(
     # Check for empty data
 
     if len(X_train) == 0 or len(y_train) == 0:
-
-        raise DataValidationError("Dati di training vuoti")
+        raise ValueError("Dati di training vuoti")
 
     # Check for single class
 
     if len(y_train.unique()) < 2:
-
-        raise DataValidationError(
-            "Solo una classe nel target",
-            errors=[f"Target has only one class: {y_train.unique()}"],
-        )
+        raise ValueError(f"Solo una classe nel target: {y_train.unique()}")
 
     model = RandomForestClassifier(
         n_estimators=n_estimators,
@@ -836,8 +684,6 @@ def create_temporal_sequences(
 
         sequence_length: Dimensione della finestra temporale (lookback)
 
-
-
     Returns:
 
         X_seq: Array 3D (samples, sequence_length, features)
@@ -849,10 +695,7 @@ def create_temporal_sequences(
     logger.info(f"🔄 Estrazione finestre temporali 3D (lookback={sequence_length})...")
 
     if len(X) < sequence_length:
-
-        raise DataValidationError(
-            f"Dataset troppo piccolo per sequence_length={sequence_length}"
-        )
+        raise ValueError(f"Dataset troppo piccolo ({len(X)} righe) per sequence_length={sequence_length}")
 
     X_array, y_array = X.values, y.values
 
@@ -1331,31 +1174,19 @@ def find_optimal_threshold(
 
     if len(X) == 0 or len(y) == 0:
 
-        raise DataValidationError("Dati vuoti per ricerca soglia")
+        raise ValueError("Dati vuoti per la ricerca della soglia ottimale")
 
-    # Predici probabilità
+    if hasattr(model, "predict_proba"):
+        # Per modelli scikit-learn (es. RandomForest)
+        y_pred = model.predict_proba(X)[:, 1]
+    elif hasattr(model, "predict"):
+        # Per modelli XGBoost
+        import xgboost as xgb
+        dmatrix = xgb.DMatrix(X)
+        y_pred = model.predict(dmatrix)
+    else:
+        raise TypeError(f"Tipo di modello non supportato per la ricerca della soglia: {type(model)}")
 
-    try:
-
-        if hasattr(model, "predict_proba"):
-
-            y_pred = model.predict_proba(X)[:, 1]
-
-        else:
-
-            # Per XGBoost
-
-            import xgboost as xgb
-
-            dmatrix = xgb.DMatrix(X)
-
-            y_pred = model.predict(dmatrix)
-
-    except Exception as e:
-
-        logger.error(f"Errore predizione: {e}")
-
-        raise
 
     # Genera soglie da testare
 
@@ -1403,7 +1234,7 @@ def find_optimal_threshold(
 
 def save_model(
     model: Any,
-    model_dir: Path = Path("mobile/models"),
+    model_dir: Path = Path("models"),
     model_name: str = "modello_rischio",
     metadata: Optional[Dict] = None,
 ) -> Path:
@@ -1490,7 +1321,7 @@ def main():
     parser.add_argument(
         "--model-output-dir",
         type=Path,
-        default=PROJECT_ROOT / "mobile" / "models",
+        default=PROJECT_ROOT / "models",
         help="Directory di output per i modelli",
     )
     parser.add_argument(
@@ -1529,6 +1360,15 @@ def main():
     try:
         # I dati vengono ora caricati esclusivamente dal database per coerenza.
         df = load_data_from_db()
+
+        logger.info("🔬 Calcolo feature aggiuntive (b-value)...")
+        # Usiamo 'numero_eventi' come proxy della magnitudo, come da docstring della funzione
+        if 'numero_eventi' in df.columns:
+            df['bvalue_rolling_24h'] = calculate_rolling_b_value(df['numero_eventi'], window_size=24)
+            # Riempiamo eventuali NaN iniziali per non perdere dati
+            df['bvalue_rolling_24h'] = df['bvalue_rolling_24h'].fillna(method='bfill').fillna(0)
+            logger.info("✅ Feature b-value calcolata e aggiunta al dataset.")
+
         df_train, df_test = split_data_temporal(df, test_size=0.2)
         X_train, y_train = prepare_features(df_train)
         X_test, y_test = prepare_features(df_test)

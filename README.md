@@ -1,5 +1,47 @@
 # Pipeline Sismologica Geospaziale
 
+## Stato attuale (aggiornato)
+
+- Ingestione in DuckDB attiva su `data/db/seismic_output.duckdb`.
+- Script di ingestione run singola: `ingest_runs_to_db.py`.
+- Script di ingestione batch di tutte le run: `scripts/ingest_all_runs.py`.
+- Pipeline resa più robusta su differenze di schema CSV (`deltas_spatial.csv`).
+
+## Comandi principali
+
+### Ingestione singola run
+```bash
+python ingest_runs_to_db.py --run-id ingestion_20240516 --run-name "Analisi Pipeline: ingestion_20240516" --run-dir runs/ingestion_20240516 --source-type mseed
+```
+
+### Ingestione di tutte le run
+```bash
+python scripts/ingest_all_runs.py --runs-dir runs --source-type mseed
+```
+
+## Note operative
+
+- L’ingestione è **idempotente per `run_id`**: in caso di rerun, i dati della stessa run vengono riallineati.
+- Se `deltas_spatial.csv` non contiene `easting/northing`, i campi vengono inseriti a `NULL` (warning non bloccante).
+- La vista `ml_features_ready_view` viene rigenerata a fine ingestione.
+
+## Stato architetturale (aggiornato)
+
+Il progetto adotta una separazione netta:
+
+- `runs/`: esecuzioni singole e artefatti operativi.
+- `data/db/seismic_output.duckdb`: base dati canonica per analisi storica e ML.
+- `data/raw`, `data/interim`, `data/processed`: livelli dati standard.
+
+Per dettagli operativi: `docs/ARCHITETTURA_DATI_E_INGESTIONE.md`.
+
+## Linee guida rapide
+
+1. Ogni run deve avere `run_id` univoco.
+2. I risultati diventano ufficiali solo dopo ingestione nel DB.
+3. Tutte le tabelle analitiche devono includere `run_id`, `station_code`, `reference_time`.
+4. Il training ML deve usare dataset temporali derivati dal DB, non da file sparsi.
+
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
@@ -39,29 +81,37 @@ Il progetto produce output tabellari e cartografici compatibili con flussi GIS e
 
 ### Flusso logico
 
-Il cuore del sistema è l'orchestratore `run_pipeline.py`, che può essere controllato sia da riga di comando (CLI) che da un'interfaccia web (`app.py`). Ogni esecuzione (`run`) è isolata in una sua cartella per garantire riproducibilità.
+L'architettura del progetto è stata modernizzata per separare l'elaborazione dei dati dal loro consumo, con un database centrale come unica fonte di verità (Single Source of Truth).
+
+1.  **Elaborazione Dati**: `run_pipeline.py` orchestra l'esecuzione di una singola analisi. Ogni `run` produce i suoi artefatti (CSV, mappe) in una cartella isolata in `runs/`.
+2.  **Ingestione Dati**: Al termine di una `run`, lo script `ingest_runs_to_db.py` (attivato con `--auto-ingest`) consolida i risultati nel database centrale DuckDB (`data/db/seismic_output.duckdb`). Questo database aggrega i dati di tutte le esecuzioni.
+3.  **Machine Learning & Analisi**:
+    -   `train_risk_model.py` utilizza i dati storici aggregati in DuckDB per addestrare i modelli di rischio.
+    -   `predict_from_db.py` usa i dati più recenti nel DB per generare predizioni con i modelli addestrati.
+    -   L'interfaccia web `app.py` può sia avviare nuove pipeline sia visualizzare i dati storici e le analisi direttamente dal database.
 
 ```mermaid
-flowchart TD
-    subgraph "1. Configurazione"
-        A[config.yaml / .env]
+graph TD
+    subgraph "Input & Esecuzione"
+        A(Web UI: app.py) --> B(Orchestratore: run_pipeline.py)
+        C(CLI) --> B
     end
 
-    subgraph "2. Esecuzione"
-        B(Web UI: app.py)
-        C(CLI: run_pipeline.py)
+    subgraph "Flusso Dati"
+        B -- "genera artefatti" --> D[Cartella di Run: runs/{nome_run}]
+        D -- "--auto-ingest" --> E(Ingestione: ingest_runs_to_db.py)
+        E -- "popola/aggiorna" --> F[<i class='fa fa-database'></i> DuckDB: seismic_output.duckdb]
     end
 
-    A --> C
-    B -.-> C
+    subgraph "Consumo Dati & ML"
+        F -- "legge dati per training" --> G(Training: train_risk_model.py)
+        G -- "salva modello" --> H[models/best_model.pkl]
+        
+        F -- "legge dati per inferenza" --> I(Inferenza: predict_from_db.py)
+        H -- "carica modello" --> I
+        I -- "salva predizioni" --> J[runs/inference_results/]
 
-    subgraph "3. Pipeline di Elaborazione"
-        C --> P0[Fase 0: Filtro Spaziale] --> P1[Fase 1: Download Dati] --> P2[Fase 2: Calcolo Delta] --> P3[Fase 3: Georeferenziazione] --> P4[Fase 4: Creazione Mappe/GIS]
-        P4 --> P5[Opzionale: Analisi Mobile ML]
-    end
-
-    subgraph "4. Risultati"
-        P5 --> R[runs/{nome_run}/]
+        F -- "legge dati aggregati" --> A
     end
 ```
 
@@ -92,9 +142,8 @@ git clone https://github.com/pietroscik/Pipeline-Sismologica-Geospaziale.git
 cd Pipeline-Sismologica-Geospaziale
 python -m venv venv
 .\venv\Scripts\activate
-pip install -r requirements.txt
-pip install -r requirements-test.txt
-pip install -e .
+# Installa il progetto in modalità editabile con tutte le dipendenze di sviluppo e ML
+pip install -e .[dev,ml]
 ```
 
 ### Verifica
@@ -348,7 +397,7 @@ black .
 ### Controllo statico
 
 ```powershell
-ruff check .
+flake8 .
 ```
 
 ## Changelog
