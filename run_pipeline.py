@@ -616,13 +616,18 @@ Esempi di uso:
 
             # Se non abbiamo scaricato dati, usiamo la logica pre-esistente.
             elif delta_csv:
-                logger.info(f"[Fase 2] Utilizzo file delta pre-esistente: {delta_csv}")
+                logger.info(f"[Fase 2] Utilizzo file delta pre-esistente: {delta_csv.name}")
 
-                out_station_deltas = delta_csv
-                if not out_station_deltas.exists():
-                    logger.error(f"File delta non trovato: {out_station_deltas}")
+                # FIX: Copia il file delta esterno nella directory di run per coerenza
+                # e per renderlo disponibile all'ingestione.
+                target_name = "station_deltas" + "".join(delta_csv.suffixes)
+                out_station_deltas = data_interim_dir / target_name
+                shutil.copy(delta_csv, out_station_deltas)
+                created_files.append(out_station_deltas)
+                logger.info(f"  -> Copiato in: {out_station_deltas.relative_to(PROJECT_ROOT)}")
+                if not out_station_deltas.exists(): # Double check
                     raise FileNotFoundError(
-                        f"Delta CSV file not found: {out_station_deltas}"
+                        f"Copia del file delta fallita: {out_station_deltas}"
                     )
 
             else:

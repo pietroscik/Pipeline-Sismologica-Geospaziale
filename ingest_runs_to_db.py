@@ -14,7 +14,7 @@ logger = setup_logger("ingest_to_db")
 
 # --- Data Validation Schemas with Pandera ---
 
-class RawDeltasSchema(pa.SchemaModel):
+class RawDeltasSchema(pa.DataFrameSchema):
     """Schema per validare i dati grezzi dei delta (es. station_deltas.csv)."""
     event_id: Series[str]
     network: Series[str]
@@ -29,7 +29,7 @@ class RawDeltasSchema(pa.SchemaModel):
         coerce = True
         strict = "filter"  # Ignora colonne extra non definite nello schema
 
-class StationStatsSchema(pa.SchemaModel):
+class StationStatsSchema(pa.DataFrameSchema):
     """Schema per validare i dati delle statistiche per stazione."""
     station: Series[str]
     reference_date: Series[str]
@@ -47,7 +47,7 @@ class StationStatsSchema(pa.SchemaModel):
         coerce = True
         strict = "filter"
 
-class DeltasSpatialSchema(pa.SchemaModel):
+class DeltasSpatialSchema(pa.DataFrameSchema):
     """Schema per validare i dati spazializzati (controllo core)."""
     station: Series[str]
     latitude: Series[float] = pa.Field(ge=-90, le=90)
@@ -61,7 +61,7 @@ DUCKDB_PATH = get_project_root() / "data" / "db" / "seismic_output.duckdb"
 
 def get_file_hash(file_path: Path) -> str:
     """Calcola l'hash SHA256 di un file."""
-    if not file_path.exists():
+    if not file_path or not file_path.exists():
         return "N/A"
     h = hashlib.sha256()
     h.update(file_path.read_bytes())
@@ -331,7 +331,7 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
         config_hash = get_file_hash(config_path) if config_path else "N/A"
         
         # Trova il file dei delta per calcolare l'hash
-        deltas_path = next(run_dir.glob("interim/station_deltas*.csv"), None)
+        deltas_path = next(run_dir.glob("interim/station_deltas*"), None)
         raw_deltas_hash = get_file_hash(deltas_path) if deltas_path else "N/A"
 
         con.execute("""
@@ -352,7 +352,10 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
         # --- RAW DELTAS ---
         if deltas_path and deltas_path.exists():
             df_deltas = pd.read_csv(deltas_path)
-            df_deltas = validate_dataframe(df_deltas, RawDeltasSchema.to_schema(), deltas_path.name)
+            # Gestisce l'ingestione sia da file con 'station' che 'station_code'
+            if 'station_code' in df_deltas.columns and 'station' not in df_deltas.columns:
+                df_deltas = df_deltas.rename(columns={'station_code': 'station'})
+            df_deltas = validate_dataframe(df_deltas, RawDeltasSchema, deltas_path.name)
             
             df_deltas['run_id'] = run_id
             df_deltas = df_deltas.rename(columns={'station': 'station_code'})
@@ -367,7 +370,10 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
         stats_path = run_dir / "processed" / "station_stats.csv"
         if stats_path.exists():
             df_stats = pd.read_csv(stats_path)
-            df_stats = validate_dataframe(df_stats, StationStatsSchema.to_schema(), stats_path.name)
+            # Gestisce l'ingestione sia da file con 'station' che 'station_code'
+            if 'station_code' in df_stats.columns and 'station' not in df_stats.columns:
+                df_stats = df_stats.rename(columns={'station_code': 'station'})
+            df_stats = validate_dataframe(df_stats, StationStatsSchema, stats_path.name)
 
             df_stats['run_id'] = run_id
             df_stats = df_stats.rename(columns={'station': 'station_code'})
@@ -382,7 +388,10 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
         spatial_path = run_dir / "processed" / "deltas_spatial.csv"
         if spatial_path.exists():
             df_spatial = pd.read_csv(spatial_path)
-            df_spatial = validate_dataframe(df_spatial, DeltasSpatialSchema.to_schema(), spatial_path.name)
+            # Gestisce l'ingestione sia da file con 'station' che 'station_code'
+            if 'station_code' in df_spatial.columns and 'station' not in df_spatial.columns:
+                df_spatial = df_spatial.rename(columns={'station_code': 'station'})
+            df_spatial = validate_dataframe(df_spatial, DeltasSpatialSchema, spatial_path.name)
 
             # Ingestione STATIONS
             station_cols_map = {
