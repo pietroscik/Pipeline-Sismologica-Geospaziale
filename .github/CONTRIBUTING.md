@@ -6,14 +6,13 @@ Siamo felici che tu voglia contribuire al progetto! Per favore, prenditi un mome
 
 ### Segnalare Bug
 
-- Utilizza il template [Bug Report](https://github.com/OWNER/REPO/issues/new?template=bug_report.md) per segnalare un bug.
-- Assicurati che il bug non sia già stato segnalato cercando tra le [Issues](https://github.com/OWNER/REPO/issues).
+- Utilizza il template [Bug Report](../../issues/new?template=bug_report.md) per segnalare un bug.
+- Assicurati che il bug non sia già stato segnalato cercando tra le [Issues](../../issues).
 - Includi più dettagli possibili: i passaggi per riprodurlo, la versione del software, il tuo ambiente, e log/screenshot.
 
 ### Suggerire Nuove Funzionalità
 
-- Utilizza il template [Feature Request](https://github.com/OWNER/REPO/issues/new?template=feature_request.md) per proporre una nuova funzionalità.
-- Spiega chiaramente perché questa funzionalità sarebbe utile e come si inserisce nel progetto.
+- Utilizza il template [Feature Request](../../issues/new?template=feature_request.md) per proporre una nuova funzionalità.
 
 ### La Tua Prima Pull Request
 

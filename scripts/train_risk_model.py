@@ -15,7 +15,7 @@ from imblearn.over_sampling import SMOTE
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 from scripts.data_validator import DataValidationError
-from scripts.feature_engineering import calculate_rolling_b_value
+from feature_engineering import calculate_rolling_b_value
 from scripts.utils import setup_logger
 
 logger = setup_logger("train_risk_model")
@@ -46,7 +46,10 @@ def load_data_from_db(db_path: Path | str = DUCKDB_PATH):
             raise RuntimeError("Dati per il training non trovati nel database.")
 
         logger.info(f"   - Esecuzione query sulla sorgente '{source_name}'...")
-        df = con.execute(f"SELECT * FROM {source_name}").fetch_df()
+        df = con.execute(f"SELECT * FROM {source_name} ORDER BY timestamp").fetch_df()
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df = df.sort_values("timestamp").reset_index(drop=True)
         logger.info(f"✅ Dataset caricato con successo: {len(df)} righe.")
         return df
     except duckdb.Error as e:

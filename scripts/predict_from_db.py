@@ -10,7 +10,7 @@ import joblib
 import numpy as np
 from pathlib import Path
 import pandas as pd
-from scripts.feature_engineering import calculate_rolling_b_value
+from feature_engineering import calculate_rolling_b_value
 from scripts.utils import setup_logger
 
 logger = setup_logger("inference")

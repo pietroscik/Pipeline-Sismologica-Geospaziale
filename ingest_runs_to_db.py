@@ -31,31 +31,26 @@ class RawDeltasSchema(pa.DataFrameSchema):
 
 class StationStatsSchema(pa.DataFrameSchema):
     """Schema per validare i dati delle statistiche per stazione."""
+
     station: Series[str]
-    reference_date: Series[str]
     base_count: Series[int]
     base_mean: Series[float]
     base_std: Series[float]
     base_median: Series[float]
-    soft_count: Series[int]
-    soft_mean: Series[float]
-    soft_std: Series[float]
-    soft_median: Series[float]
-    soft_minus_base_mean: Series[float]
 
     class Config:
         coerce = True
-        strict = "filter"
-
-class DeltasSpatialSchema(pa.DataFrameSchema):
+        strict = False  # consenti colonne opzionali (es. soft_*) senza scartarle
+class DeltasSpatialSchema(pa.SchemaModel):
     """Schema per validare i dati spazializzati (controllo core)."""
+
     station: Series[str]
     latitude: Series[float] = pa.Field(ge=-90, le=90)
     longitude: Series[float] = pa.Field(ge=-180, le=180)
 
     class Config:
         coerce = True
-        strict = "filter"
+        strict = False
 
 DUCKDB_PATH = get_project_root() / "data" / "db" / "seismic_output.duckdb"
 
@@ -370,14 +365,13 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
         stats_path = run_dir / "processed" / "station_stats.csv"
         if stats_path.exists():
             df_stats = pd.read_csv(stats_path)
-            # Gestisce l'ingestione sia da file con 'station' che 'station_code'
-            if 'station_code' in df_stats.columns and 'station' not in df_stats.columns:
-                df_stats = df_stats.rename(columns={'station_code': 'station'})
-            df_stats = validate_dataframe(df_stats, StationStatsSchema, stats_path.name)
+            if "reference_date" not in df_stats.columns:
+                df_stats["reference_date"] = run_timestamp.date()
+            df_stats = validate_dataframe(df_stats, StationStatsSchema.to_schema(), stats_path.name)
 
-            df_stats['run_id'] = run_id
-            df_stats = df_stats.rename(columns={'station': 'station_code'})
-            df_stats['reference_date'] = pd.to_datetime(df_stats['reference_date'], errors='coerce')
+            df_stats["run_id"] = run_id
+            df_stats = df_stats.rename(columns={"station": "station_code"})
+            df_stats["reference_date"] = pd.to_datetime(df_stats["reference_date"], errors="coerce")
 
             con.execute("INSERT INTO station_stats BY NAME SELECT * FROM df_stats")
             logger.info(f"Inseriti {len(df_stats)} record in station_stats.")
@@ -388,11 +382,11 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
         spatial_path = run_dir / "processed" / "deltas_spatial.csv"
         if spatial_path.exists():
             df_spatial = pd.read_csv(spatial_path)
-            # Gestisce l'ingestione sia da file con 'station' che 'station_code'
-            if 'station_code' in df_spatial.columns and 'station' not in df_spatial.columns:
-                df_spatial = df_spatial.rename(columns={'station_code': 'station'})
-            df_spatial = validate_dataframe(df_spatial, DeltasSpatialSchema, spatial_path.name)
-
+            if "reference_date" not in df_spatial.columns:
+                df_spatial["reference_date"] = run_timestamp.date()
+            if "x_m" in df_spatial.columns and "easting" not in df_spatial.columns:
+                df_spatial = df_spatial.rename(columns={"x_m": "easting", "y_m": "northing"})
+            df_spatial = validate_dataframe(df_spatial, DeltasSpatialSchema.to_schema(), spatial_path.name)
             # Ingestione STATIONS
             station_cols_map = {
                 'station': 'station_code', 'network': 'network', 'latitude': 'latitude',
