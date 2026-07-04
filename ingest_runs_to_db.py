@@ -43,13 +43,14 @@ class StationStatsSchema(pa.SchemaModel):
         strict = False  # consenti colonne opzionali (es. soft_*) senza scartarle
 class DeltasSpatialSchema(pa.SchemaModel):
     """Schema per validare i dati spazializzati (controllo core)."""
+
     station: Series[str]
     latitude: Series[float] = pa.Field(ge=-90, le=90)
     longitude: Series[float] = pa.Field(ge=-180, le=180)
 
     class Config:
         coerce = True
-        strict = "filter"
+        strict = False
 
 DUCKDB_PATH = get_project_root() / "data" / "db" / "seismic_output.duckdb"
 
