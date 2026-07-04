@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.0] - 2024-07-04
+## [1.0.0] - 2026-07-04
 
 ### Added
 - **Database-centric Architecture**: Introdotto un database DuckDB (`data/db/seismic_output.duckdb`) come fonte di verità canonica per analisi e ML.
