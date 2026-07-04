@@ -23,7 +23,9 @@ logger = setup_logger("train_risk_model")
 logger.setLevel(logging.INFO)
 
 DUCKDB_PATH = PROJECT_ROOT / "data" / "db" / "seismic_output.duckdb"
-def load_data_from_db(db_path: Path | str = DUCKDB_PATH):
+
+
+def load_data_from_db(db_path=DUCKDB_PATH):
     """Carica i dati per il training, cercando la fonte migliore disponibile."""
     db_file = str(db_path)
     logger.info(f"📖 Caricamento dataset dal database DuckDB: {db_file}")
