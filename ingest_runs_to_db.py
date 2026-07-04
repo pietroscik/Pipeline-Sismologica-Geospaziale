@@ -361,11 +361,13 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
         stats_path = run_dir / "processed" / "station_stats.csv"
         if stats_path.exists():
             df_stats = pd.read_csv(stats_path)
+            if "reference_date" not in df_stats.columns:
+                df_stats["reference_date"] = run_timestamp.date()
             df_stats = validate_dataframe(df_stats, StationStatsSchema.to_schema(), stats_path.name)
 
-            df_stats['run_id'] = run_id
-            df_stats = df_stats.rename(columns={'station': 'station_code'})
-            df_stats['reference_date'] = pd.to_datetime(df_stats['reference_date'], errors='coerce')
+            df_stats["run_id"] = run_id
+            df_stats = df_stats.rename(columns={"station": "station_code"})
+            df_stats["reference_date"] = pd.to_datetime(df_stats["reference_date"], errors="coerce")
 
             con.execute("INSERT INTO station_stats BY NAME SELECT * FROM df_stats")
             logger.info(f"Inseriti {len(df_stats)} record in station_stats.")
