@@ -67,6 +67,10 @@ jobs:
           pip install -e .[dev,ml]
       - name: Run training script
         run: |
+          if [ ! -f data/db/seismic_output.duckdb ]; then
+            echo "DuckDB not found (data/db/seismic_output.duckdb); skipping training."
+            exit 0
+          fi
           # Crea una directory per i modelli di CI
           mkdir -p models/ci
           # Esegue lo script di training
