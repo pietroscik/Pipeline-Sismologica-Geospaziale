@@ -28,6 +28,8 @@ runs/
 # File di log della pipeline
 logs/
 *.log
+mobile/alerts/alerts_log.csv
+mobile/alerts/alerts_log.jsonl
 
 # IDE e impostazioni di sistema
 .vscode/

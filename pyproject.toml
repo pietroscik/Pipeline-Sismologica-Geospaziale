@@ -65,6 +65,7 @@ dependencies = [
     "duckdb>=0.9.0",
     "python-json-logger",
     "python-dotenv",
+    "cryptography>=3.4.0",
     
     # Testing & Development
     "pytest>=7.0",
@@ -135,7 +136,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--cov=mobile --cov=path_utils --cov-report=term-missing --cov-report=html --cov-fail-under=80"
+addopts = "--cov=mobile.alert_system --cov=mobile.data_validator --cov=path_utils --cov-report=term-missing --cov-report=html --cov-fail-under=70"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests",

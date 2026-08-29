@@ -41,7 +41,7 @@ Il progetto produce output tabellari e cartografici compatibili con flussi GIS e
 
 Il cuore del sistema è l'orchestratore `run_pipeline.py`, che può essere controllato sia da riga di comando (CLI) che da un'interfaccia web (`app.py`). Ogni esecuzione (`run`) è isolata in una sua cartella per garantire riproducibilità.
 
-```mermaid
+```
 flowchart TD
     subgraph "1. Configurazione"
         A[config.yaml / .env]
@@ -87,7 +87,7 @@ flowchart TD
 
 ### Ambiente di sviluppo
 
-```powershell
+```
 git clone https://github.com/pietroscik/Pipeline-Sismologica-Geospaziale.git
 cd Pipeline-Sismologica-Geospaziale
 python -m venv venv
@@ -99,7 +99,7 @@ pip install -e .
 
 ### Verifica
 
-```powershell
+```
 pytest
 ```
 
@@ -107,7 +107,7 @@ pytest
 
 L'interfaccia web è il modo più semplice per interagire con la pipeline.
 
-```powershell
+```
 streamlit run app.py
 ```
 
@@ -119,7 +119,7 @@ Ci sono due modi principali per eseguire il progetto.
 
 L'interfaccia grafica basata su Streamlit è il metodo più intuitivo. Permette di configurare tutti i parametri, avviare la pipeline e visualizzare i risultati senza usare la riga di comando.
 
-```powershell
+```
 streamlit run app.py
 ```
 
@@ -128,19 +128,19 @@ streamlit run app.py
 Per automazione e scenari avanzati, puoi usare direttamente `run_pipeline.py`.
 
 **Esempio 1: Esecuzione base con dati di default**
-```powershell
+```
 # Esegue le fasi di default usando i dati presenti nella cartella /examples
 python run_pipeline.py --run-name analisi_base --delta-csv examples/mobile_devices/scoperte_automatiche.csv.gz --stations-csv examples/mobile_devices/stations.csv
 ```
 
 **Esempio 2: Download nuovi dati ed esecuzione completa**
-```powershell
+```
 # Scarica i dati per un periodo specifico e poi esegue tutte le fasi di analisi
 python run_pipeline.py --run-name download_dati_giugno --run-download --download-start 2026-06-01 --download-end 2026-06-10
 ```
 
 **Esempio 3: Esecuzione con analisi mobile (Machine Learning)**
-```powershell
+```
 # Esegue la pipeline standard e, al termine, avvia la sub-pipeline di analisi mobile per addestrare/usare modelli ML
 python run_pipeline.py --run-name analisi_con_ml --mobile-analysis --mobile-min-stations 18
 ```
@@ -153,6 +153,15 @@ python run_pipeline.py --run-name analisi_con_ml --mobile-analysis --mobile-min-
 - `.env`: variabili d’ambiente locali
 - `.env.example`: template sicuro
 - `mobile/config/*.yaml`: configurazioni del sistema mobile, monitor e alert
+
+### Priorità di configurazione
+
+L'applicazione segue questa priorità (dal più alto al più basso):
+
+1. Variabili d'ambiente
+2. File di configurazione specifici per ambiente (`alert_config.{environment}.yaml`)
+3. File di configurazione generale (`alert_config.yaml`)
+4. Valori di default codificati
 
 ### Directory principali
 
@@ -213,7 +222,7 @@ L’interfaccia Streamlit (`app.py`) consente di:
 
 ## Struttura del Progetto
 
-```text
+```
 Pipeline-Sismologica-Geospaziale/
 ├── app.py
 ├── config.yaml
@@ -303,7 +312,7 @@ Ogni esecuzione produce una cartella in `runs/` contenente, tra gli altri:
 
 ### Comandi
 
-```powershell
+```
 pytest
 pytest --maxfail=1 -q
 ```
@@ -313,7 +322,7 @@ pytest --maxfail=1 -q
 ### Esecuzione standard
 Il modo più semplice per iniziare è lanciare l'interfaccia web.
 
-```powershell
+```
 streamlit run app.py
 ```
 
@@ -331,23 +340,51 @@ streamlit run app.py
 - Usare `.env` locale e mantenere `.env.example` come template.
 - Escludere artefatti sensibili/temporanei tramite `.gitignore`.
 
+### Variabili d'ambiente
+
+Il sistema supporta le seguenti categorie di variabili d'ambiente:
+
+#### Database
+- `POSTGRES_HOST` o `DB_HOST`: Host del database PostgreSQL
+- `POSTGRES_PORT` o `DB_PORT`: Porta del database (richiesta)
+- `POSTGRES_DB` o `DB_NAME`: Nome del database (richiesto)
+- `POSTGRES_USER` o `DB_USER`: Utente del database (richiesto)
+- `POSTGRES_PASSWORD` o `DB_PASSWORD`: Password del database (richiesta)
+
+#### Email e Notifiche
+- `EMAIL_ENABLED`: Abilita/disabilita notifiche email (true/false)
+- `SMTP_SERVER`: Server SMTP per l'invio email
+- `SMTP_PORT`: Porta del server SMTP
+- `SMTP_USERNAME`: Nome utente per autenticazione SMTP
+- `SMTP_PASSWORD`: Password per autenticazione SMTP
+- `SMTP_FROM`: Indirizzo email mittente
+- `EMAIL_TO`: Lista di indirizzi destinatari (separati da virgola)
+
+#### Webhook e Altre Notifiche
+- `WEBHOOK_ENABLED`: Abilita/disabilita notifiche webhook (true/false)
+- `WEBHOOK_URL`: URL per le chiamate webhook
+- `SMS_ENABLED`: Abilita/disabilita notifiche SMS (true/false)
+- `TELEGRAM_ENABLED`: Abilita/disabilita notifiche Telegram (true/false)
+
+> Nota: Le variabili d'ambiente hanno precedenza sui file di configurazione YAML.
+
 ## Sviluppo
 
 ### Test
 
-```powershell
+```
 pytest
 ```
 
 ### Formattazione
 
-```powershell
+```
 black .
 ```
 
 ### Controllo statico
 
-```powershell
+```
 ruff check .
 ```
 

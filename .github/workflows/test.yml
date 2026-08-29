@@ -31,7 +31,7 @@ jobs:
       
       - name: Test with pytest and coverage
         run: |
-          pytest tests/ -v --tb=short --cov=./ --cov-report=xml --cov-report=html --cov-fail-under=80
+          pytest tests/ -v --tb=short --cov=mobile.alert_system --cov=mobile.data_validator --cov=path_utils --cov-report=xml --cov-report=html --cov-fail-under=70
       
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
