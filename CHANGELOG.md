@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2026-08-29
+
+### Added
+- Implemented complete mobile analysis pipeline with process_pipeline.py functionality
+- Added command-line interface support to all mobile analysis scripts
+- Added comprehensive environment variable documentation to README
+- Added cryptography library to runtime dependencies in pyproject.toml
+
+### Changed
+- Refactored alert system to exclusively use standard environment variable prefixes (SMTP_*, EMAIL_*, WEBHOOK_*)
+- Removed all ALERT_* prefix dependencies from mobile/alert_system.py _load_env_config() method
+- Enhanced database configuration to support both DB_* and POSTGRES_* prefixes automatically
+- Updated mobile analysis pipeline to properly chain all processing steps with correct file paths
+- Standardized environment variable handling across all modules to align with .env.example and Docker configs
+
+### Fixed
+- Fixed empty process_pipeline.py file that was causing mobile analysis pipeline failures
+- Fixed hardcoded file paths in associa_eventi.py and prepara_ml.py scripts
+- Fixed environment variable mapping inconsistencies between code and deployment configurations
+- Fixed module import issues and dependency resolution problems
+
+---
+
 ## [0.1.1] - 2026-07-01
 
 ### Fixed

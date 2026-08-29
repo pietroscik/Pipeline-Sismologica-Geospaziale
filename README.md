@@ -366,7 +366,7 @@ Il sistema supporta le seguenti categorie di variabili d'ambiente:
 - `SMS_ENABLED`: Abilita/disabilita notifiche SMS (true/false)
 - `TELEGRAM_ENABLED`: Abilita/disabilita notifiche Telegram (true/false)
 
-> Nota: Le variabili d'ambiente hanno precedenza sui file di configurazione YAML.
+> Nota: Le variabili d'ambiente hanno precedenza sui file di configurazione YAML. Il sistema non supporta più i vecchi prefissi ALERT_*; utilizzare i prefissi standard SMTP_*, EMAIL_*, WEBHOOK_*, ecc.
 
 ## Sviluppo
 
