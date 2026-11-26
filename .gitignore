@@ -43,3 +43,10 @@ runs/
 *.pkl
 *.csv.gz
 output_*.geojson
+
+# Artefatti binari e tracking MLflow (tenere fuori dal repo git)
+mlflow.db
+mlruns/
+*.duckdb
+*.joblib
+*.skops
