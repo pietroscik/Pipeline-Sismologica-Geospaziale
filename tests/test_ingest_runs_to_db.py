@@ -258,3 +258,45 @@ class TestMain:
         monkeypatch.setattr(sys, "argv", ["ingest_runs_to_db.py"])
         with pytest.raises(SystemExit):
             ingest.main()
+
+
+class TestIngestAttachCoordsSchema:
+    """Regressione: attach_coords_to_deltas.py produce deltas_spatial.csv
+    con colonne x_m/y_m (senza network/elevation/location) e l'ingest
+    crashava con KeyError. Verificata su run reale in Colab (2026-11-27).
+    """
+
+    def _make_attach_coords_run(self, tmp_path):
+        run_dir = tmp_path / "run_attach_coords"
+        (run_dir / "processed").mkdir(parents=True)
+        pd.DataFrame({
+            # Schema reale prodotto da attach_coords_to_deltas.py
+            "station": ["CAAM", "CAFL"],
+            "latitude": [40.82, 40.83],
+            "longitude": [14.14, 14.15],
+            "x_m": [430000.0, 431000.0],
+            "y_m": [4520000.0, 4521000.0],
+            "base_mean": [0.4, -0.1],
+        }).to_csv(run_dir / "processed" / "deltas_spatial.csv", index=False)
+        return run_dir
+
+    def test_ingest_schema_attach_coords(self, temp_db, tmp_path):
+        run_dir = self._make_attach_coords_run(tmp_path)
+        ingest.ingest_run_data(
+            run_id="run-attach", run_name="attach", run_dir=run_dir,
+            source_type="catalog",
+        )
+        # Le stazioni sono ingerite con easting/northing mappati da x_m/y_m
+        stations = read_table(temp_db, "stations")
+        assert set(stations["station_code"]) == {"CAAM", "CAFL"}
+        coords = {
+            row["station_code"]: (row["easting"], row["northing"])
+            for _, row in stations.iterrows()
+        }
+        assert coords["CAAM"] == (430000.0, 4520000.0)
+        assert coords["CAFL"] == (431000.0, 4521000.0)
+        # Colonne opzionali mancanti -> NULL accettati dallo schema
+        # deltas_spatial ingerito con i valori base_mean
+        spatial = read_table(temp_db, "deltas_spatial")
+        assert len(spatial) == 2
+        assert set(spatial["delta_type"]) == {"base_mean"}
