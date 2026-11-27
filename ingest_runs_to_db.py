@@ -146,16 +146,55 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
     CREATE OR REPLACE VIEW ml_features_ready_view AS
     WITH generated_features AS (
         -- Questa parte genera le feature dai dati grezzi (raw_deltas), come prima.
-        WITH hourly_aggregates AS (
+        WITH hourly_grid AS (
+            -- Griglia oraria CONTINUA: genera anche le ore senza dati, così i
+            -- buchi di trasmissione diventano righe esplicite (numero_eventi=0)
+            -- invece di assenze silenziose. Le finestre mobili contano quindi
+            -- ore reali e non solo ore con dati.
+            -- NOTA: generate_series in DuckDB è una funzione TABELLA (FROM),
+            -- non scalare: usata nel SELECT ritornerebbe una LISTA in una riga.
+            SELECT grid.ts AS timestamp
+            FROM generate_series(
+                       date_trunc('hour', (SELECT min(arrival_iso) FROM raw_deltas)),
+                       date_trunc('hour', (SELECT max(arrival_iso) FROM raw_deltas)),
+                       INTERVAL 1 HOUR
+                   ) AS grid(ts)
+        ),
+        hourly_counts AS (
             -- 1. Aggrega i rilevamenti grezzi in bucket orari
             SELECT
-                date_trunc('hour', arrival_iso) AS timestamp,
+                date_trunc('hour', arrival_iso) AS hour,
                 count(*) AS numero_eventi,
+                count(DISTINCT station_code) AS stazioni_attive,
                 max(delta_seconds) AS energia_max,
                 avg(delta_seconds) AS energia_media,
                 stddev_pop(delta_seconds) AS energia_std
             FROM raw_deltas
             GROUP BY date_trunc('hour', arrival_iso)
+        ),
+        expected_stations AS (
+            -- Numero di stazioni che hanno mai trasmesso nel dataset: la
+            -- completezza è relativa a questo valore (autonoma dal catalogo
+            -- 'stations', che può contenere stazioni fuori periodo)
+            SELECT count(DISTINCT station_code) AS stazioni_attese FROM raw_deltas
+        ),
+        hourly_aggregates AS (
+            -- Griglia + conteggi: le ore mancanti diventano righe con
+            -- numero_eventi=0 e is_data_complete=0
+            SELECT
+                g.timestamp AS timestamp,
+                COALESCE(c.numero_eventi, 0) AS numero_eventi,
+                COALESCE(c.energia_max, 0) AS energia_max,
+                COALESCE(c.energia_media, 0) AS energia_media,
+                COALESCE(c.energia_std, 0) AS energia_std,
+                CASE
+                    WHEN e.stazioni_attese = 0 THEN 0
+                    WHEN COALESCE(c.stazioni_attive, 0)::DOUBLE / e.stazioni_attese >= 0.95 THEN 1
+                    ELSE 0
+                END AS is_data_complete
+            FROM hourly_grid g
+            CROSS JOIN expected_stations e
+            LEFT JOIN hourly_counts c ON c.hour = g.timestamp
         ),
         rolling_features AS (
             -- 2. Calcola le feature su finestre mobili
@@ -204,6 +243,11 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             CASE WHEN extract('hour' from timestamp) >= 22 OR extract('hour' from timestamp) <= 6 THEN 1 ELSE 0 END AS is_notte,
             CASE WHEN extract('dow' from timestamp) IN (0, 6) THEN 1 ELSE 0 END AS is_weekend,
             NULL as bvalue_rolling_24h, -- Manteniamo la colonna per compatibilità, ma la calcoleremo in Python
+            -- Completezza del dato per finestra oraria: 1 se >=95% delle
+            -- stazioni attese ha trasmesso, 0 altrimenti (ore mancanti incluse).
+            -- Evita che uno 0 dovuto a telemetria assente sia confuso con
+            -- assenza di attività sismica.
+            is_data_complete,
             Target_Allarme
         FROM target_generation, data_boundary
         -- Escludiamo le ultime 24 ore dove non possiamo calcolare un target affidabile
@@ -223,6 +267,7 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
         CASE WHEN extract('hour' from timestamp) >= 22 OR extract('hour' from timestamp) <= 6 THEN 1 ELSE 0 END AS is_notte,
         CASE WHEN extract('dow' from timestamp) IN (0, 6) THEN 1 ELSE 0 END AS is_weekend, -- DuckDB DOW: 0=Sun, 6=Sat
         bvalue_rolling_24h,
+        CAST(NULL AS INTEGER) as is_data_complete, -- storico: completezza non tracciata
         Target_Allarme
     FROM ml_features_timeseries
     
@@ -235,7 +280,7 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
         eventi_ultime_24h, energia_max_ultime_24h, energia_media_ultime_24h,
         eventi_ultime_48h, energia_max_ultime_48h, energia_media_ultime_48h,
         ora_del_giorno, giorno_della_settimana, is_notte, is_weekend,
-        bvalue_rolling_24h, Target_Allarme
+        bvalue_rolling_24h, is_data_complete, Target_Allarme
     FROM generated_features;
     """
     con.execute(view_sql)
