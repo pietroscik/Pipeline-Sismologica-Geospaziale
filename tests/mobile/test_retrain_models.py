@@ -59,7 +59,7 @@ def workspace(tmp_path, monkeypatch):
             "cross_validation_folds": 3,
             "test_size": 0.25,
         },
-        "data": {"input_dir": "data", "input_file": "dataset.csv", "min_samples": 10},
+        "data": {"input_dir": str(tmp_path / "data"), "input_file": "dataset.csv", "min_samples": 10},
         "notification": {"enabled": True, "success": True, "failure": True},
     }
     cfg_path = tmp_path / "retraining_config.yaml"
@@ -112,9 +112,10 @@ class TestDataLoader:
         assert y.name == "target"                    # ultima colonna = target
         assert len(X) == len(y) == 200
 
-    def test_file_mancante_solleva(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        cfg = RetrainingConfig(tmp_path / "non_esiste.yaml")  # default: file mancante
+    def test_file_mancante_solleva(self, tmp_path):
+        # input_dir puntato su una directory inesistente (assoluta)
+        cfg = RetrainingConfig(tmp_path / "non_esiste.yaml")
+        cfg.config["data"]["input_dir"] = str(tmp_path / "non_esiste")
         with pytest.raises(FileNotFoundError):
             DataLoader(cfg).load_data()
 
@@ -269,11 +270,19 @@ class TestRetrainModel:
         assert result["status"] == "success"
         # Dataset lineare + soglia 0.5: il deploy deve avvenire
         assert result["deployed"] is True
-        assert result["new_version"] == "v1.0.0"
+        # Convenzione del versioning reale: v1_YYYYMMDD
+        assert result["new_version"].startswith("v1_")
         assert result["metrics"]["r2"] > 0.5
-        # Il modello è effettivamente salvato
+        # Il modello è effettivamente salvato (con l'interfaccia dell'adapter)
+        version = result["new_version"]
         assert (orch.model_version_manager.models_dir / "random_forest"
-                / "v1.0.0" / "model.joblib").exists()
+                / version / "model.joblib").exists()
+        # metrics.json (trigger retraining) e performance.json (monitor) entrambi presenti
+        vdir = orch.model_version_manager.models_dir / "random_forest" / version
+        assert (vdir / "metrics.json").exists()
+        assert (vdir / "performance.json").exists()
+        # Il symlink 'current' punta alla nuova versione: il monitor può caricarla
+        assert (vdir.parent / "current").exists()
         # Il report JSON e last_run.txt sono scritti
         assert (orch.runs_dir / "last_run.txt").exists()
         reports = list(orch.runs_dir.glob("retraining_random_forest_*.json"))
@@ -297,3 +306,56 @@ class TestRetrainModel:
         assert overall["summary"]["success"] >= 1
         assert overall["summary"]["failure"] >= 1
         assert "random_forest" in overall["models"]
+
+
+class TestVersioningAdapterIntegration:
+    """Test di integrazione: retraining -> versioning reale -> monitor.
+
+    Chiude il cerchio rotto prima dell'adapter: i modelli salvati dal
+    retraining devono essere caricabili dal monitor tramite il symlink
+    'current' del sistema di versioning reale.
+    """
+
+    def test_retrain_deploy_poi_monitor_carica_current(self, workspace):
+        orch = RetrainingOrchestrator(RetrainingConfig(workspace / "retraining_config.yaml"))
+        result = orch.retrain_model("random_forest")
+        assert result["status"] == "success" and result["deployed"] is True
+
+        # Il monitor carica con l'API reale del versioning (via 'current')
+        from mobile.model_versioning import ModelVersionManager
+
+        manager = ModelVersionManager(
+            model_type="random_forest",
+            base_dir=orch.model_version_manager.models_dir,
+            use_mlflow=False,
+        )
+        model, metadata = manager.load_model("current")
+        assert hasattr(model, "predict")
+        assert metadata["version"] == result["new_version"]
+        assert metadata["trained_by"] == "retraining"
+
+        # Le performance lette dal monitor coincidono con le metriche del retraining
+        import json as _json
+        perf = _json.loads(
+            (manager.models_dir / result["new_version"] / "performance.json").read_text()
+        )
+        assert abs(perf["r2"] - result["metrics"]["r2"]) < 1e-9
+
+    def test_adapter_interfaccia(self, tmp_path):
+        """L'adapter espone esattamente il contratto usato dall'orchestratore."""
+        from mobile.retrain_models import ModelVersioningAdapter
+
+        adapter = ModelVersioningAdapter(models_dir=tmp_path / "models")
+        assert adapter.get_latest_version("xgb") is None
+        # Prima versione con la convenzione del manager reale
+        assert adapter.get_next_version("xgb").startswith("v1_")
+
+        from sklearn.ensemble import RandomForestRegressor
+
+        model = RandomForestRegressor().fit(np.random.rand(20, 2), np.random.rand(20))
+        version = adapter.get_next_version("xgb")
+        path = adapter.save_model(model, "xgb", version, {"r2": 0.9})
+        assert path.exists()
+        assert adapter.get_latest_version("xgb") == version
+        loaded = adapter.load_model("xgb", version)
+        assert hasattr(loaded, "predict")

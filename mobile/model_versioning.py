@@ -209,6 +209,11 @@ class ModelVersionManager:
 
         return f"v1_{today}"
 
+    def get_next_version(self) -> str:
+        """Nome che avrà la prossima versione salvata (pubblico, usato dal retraining)."""
+
+        return self._generate_version()
+
     def _get_version_dir(self, version: str) -> Path:
         """Ottieni il path della directory di una versione."""
 
