@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Downloader FDSN: il client ObsPy cached il cui service discovery è fallito
+  transitoriamente (rate-limit con worker paralleli) restava 'senza
+  dataselect' per l'intera vita del thread, fallendo ogni task successivo
+  (run reale 2026-11-27: 267/294 task failed). Ora il primo errore
+  'does not have a dataselect service' invalida la cache e il retry rifà
+  il discovery; se anche il client ricreato è senza dataselect, il
+  fallimento è permanente e si passa al client successivo
 - Test flaky del Transformer: aggiunto `torch.manual_seed` e allineato il
   range del check `best_threshold` alla griglia MCC [0.01, 0.95] (PR #41
   aveva esteso la griglia ma non l'assert del test)
