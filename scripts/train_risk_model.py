@@ -913,6 +913,40 @@ except ImportError:
     SeismicTransformer = None
 
 
+def find_best_mcc_threshold(y_true: np.ndarray, y_proba: np.ndarray, grid_size: int = 181) -> Tuple[float, float]:
+    """Trova la soglia in [0.05, 0.95] che massimizza l'MCC.
+
+    Da usare SOLO su un validation set mai visto in training (evita il data
+    leakage: la soglia è un iperparametro appreso quanto i pesi del modello).
+
+    Returns:
+        (soglia ottimale, MCC associato); (0.5, 0.0) se il validation set
+        contiene una sola classe (nessuna ottimizzazione possibile).
+    """
+    from sklearn.metrics import matthews_corrcoef
+
+    y_true = np.asarray(y_true)
+    y_proba = np.asarray(y_proba)
+    if len(y_true) == 0 or len(np.unique(y_true)) < 2:
+        logger.warning(
+            "Validation set con una sola classe: soglia MCC non ottimizzabile, uso 0.5"
+        )
+        return 0.5, 0.0
+
+    thresholds = np.linspace(0.05, 0.95, grid_size)
+    best_thr, best_mcc = 0.5, -1.0
+    for thr in thresholds:
+        preds = (y_proba >= thr).astype(int)
+        # Evita soglie degeneri che predicono una sola classe
+        if len(np.unique(preds)) < 2:
+            continue
+        mcc = matthews_corrcoef(y_true, preds)
+        if mcc > best_mcc:
+            best_mcc = mcc
+            best_thr = float(thr)
+    return best_thr, float(best_mcc)
+
+
 def train_temporal_transformer(
     X_train: pd.DataFrame,
     y_train: pd.Series,
@@ -946,118 +980,172 @@ def train_temporal_transformer(
 
     # Preparazione dei dati 3D (Sliding Window)
 
-    X_train = X_train.fillna(method="ffill").fillna(0)
+    X_train = X_train.ffill().fillna(0)
     if X_test is not None:
-        X_test = X_test.fillna(method="ffill").fillna(0)
+        X_test = X_test.ffill().fillna(0)
 
     X_train_3d, y_train_1d = create_temporal_sequences(
         X_train, y_train, sequence_length
     )
 
-    # Creazione dei tensori e del DataLoader PyTorch per il batching
+    # Split temporale di validazione: il 15% finale del train (già in ordine
+    # temporale) viene separato PRIMA dell'addestramento. Best-epoch e soglia
+    # MCC vengono appresi SOLO qui, MAI sul test set (niente data leakage).
+    val_split = int(len(X_train_3d) * 0.85)
+    use_val = 0 < val_split < len(X_train_3d)
+    if use_val:
+        X_tr, y_tr = X_train_3d[:val_split], y_train_1d[:val_split]
+        X_va, y_va = X_train_3d[val_split:], y_train_1d[val_split:]
+    else:
+        # Dataset troppo piccolo per la slice: checkpoint su train_loss
+        X_tr, y_tr, X_va, y_va = X_train_3d, y_train_1d, None, None
 
+    # Creazione dei tensori e dei DataLoader PyTorch per il batching
     train_dataset = TensorDataset(
-        torch.tensor(X_train_3d),
-        torch.tensor(y_train_1d).unsqueeze(
-            1
-        ),  # Aggiungiamo una dimensione (batch, 1) per il layer Sigmoid
+        torch.tensor(X_tr),
+        torch.tensor(y_tr).unsqueeze(1),
     )
-
-    # Nota: Shuffle=True va bene qui per mescolare i batch DURANTE il training,
-
-    # poiché l'ordine temporale ALL'INTERNO della singola finestra è già stato "congelato" nel 3D.
-
+    # Nota: Shuffle=True va bene per il training perché l'ordine temporale
+    # ALL'INTERNO della singola finestra è già congelato nel tensore 3D.
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = None
+    if X_va is not None:
+        val_dataset = TensorDataset(
+            torch.tensor(X_va),
+            torch.tensor(y_va).unsqueeze(1),
+        )
+        # Il validation loader NON mescola: è una serie temporale
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
+    import copy
     import torch.optim as optim
 
     # Istanziazione del modello con il corretto numero di feature
-
     model = SeismicTransformer(num_features=X_train.shape[1])
-
-    logger.info(
-        f"✅ Dati formattati e DataLoader creati. Inizio addestramento Transformer..."
-    )
+    logger.info("✅ DataLoader creati. Inizio addestramento Transformer...")
+    if use_val:
+        logger.info(
+            f"   Split temporale: {len(X_tr)} train / {len(X_va)} validation (coda 15%)"
+        )
 
     # Bilanciamento pesi dinamico per lo sbilanciamento delle allerte
-
     num_neg = (y_train == 0).sum()
-
     num_pos = (y_train == 1).sum()
-
     pos_weight = torch.tensor([num_neg / max(num_pos, 1)], dtype=torch.float32)
-
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
+    # Scheduler legato alla loss di validazione (o train come fallback)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=4
+    )
+
     # Preparazione test set (se disponibile)
-
     X_test_3d, y_test_1d = None, None
-
     if X_test is not None and y_test is not None and len(X_test) >= sequence_length:
-
         X_test_3d, y_test_1d = create_temporal_sequences(
             X_test, y_test, sequence_length
         )
-
         X_test_tensor = torch.tensor(X_test_3d)
-
         y_test_tensor = torch.tensor(y_test_1d).unsqueeze(1)
 
-    model.train()
+    # --- Ciclo di training: clipping + best-epoch checkpoint + early stopping ---
+    best_val_loss = float("inf")
+    best_state = None
+    patience = 10
+    epochs_no_improve = 0
 
-    for epoch in range(epochs):
-
-        epoch_loss = 0.0
-
+    for epoch in range(1, epochs + 1):
+        # TRAIN
+        model.train()
+        train_loss = 0.0
         for batch_X, batch_y in train_loader:
-
             optimizer.zero_grad()
-
-            outputs = model(batch_X)
-
-            loss = criterion(outputs, batch_y)
-
+            logits = model(batch_X).squeeze(-1)
+            loss = criterion(logits, batch_y.squeeze(-1).float())
             loss.backward()
-
+            # Gradient clipping: stabilizza il gradiente (evita picchi di loss)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+            train_loss += loss.item() * len(batch_X)
+        train_loss /= len(train_loader.dataset)
 
-            epoch_loss += loss.item()
+        # VALIDATION (fallback su train_loss se la slice temporale è assente)
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            if val_loader is not None:
+                for batch_X, batch_y in val_loader:
+                    logits = model(batch_X).squeeze(-1)
+                    loss = criterion(logits, batch_y.squeeze(-1).float())
+                    val_loss += loss.item() * len(batch_X)
+                val_loss /= len(val_loader.dataset)
+            else:
+                val_loss = train_loss
 
-        avg_loss = epoch_loss / len(train_loader)
+        scheduler.step(val_loss)
+        monitor_loss = val_loss if val_loader is not None else train_loss
 
-        if (epoch + 1) % 10 == 0 or epoch == 0:
+        # BEST-EPOCH CHECKPOINT: conserva i pesi dell'epoca con loss minore
+        if monitor_loss < best_val_loss - 1e-4:
+            best_val_loss = monitor_loss
+            best_state = copy.deepcopy(model.state_dict())
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                logger.info(
+                    f"⏹️ Early stopping all'epoca {epoch} (best loss: {best_val_loss:.4f})"
+                )
+                break
 
-            logger.info(f"   Epoca [{epoch+1}/{epochs}] - Train Loss: {avg_loss:.4f}")
+        if epoch % 10 == 0 or epoch == 1:
+            logger.info(
+                f"   Epoca [{epoch}/{epochs}] - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f}"
+            )
+
+    # Ripristina i pesi migliori prima di valutare sul test set
+    if best_state is not None:
+        model.load_state_dict(best_state)
+        logger.info(f"✅ Pesi migliori ripristinati (best loss: {best_val_loss:.4f})")
 
     # Calcolo metriche finali
-
     logger.info("📊 Calcolo metriche finali...")
-
     model.eval()
-
     with torch.no_grad():
-
-        # Predizioni sul train
-
+        # Predizioni probabilità sul train (per le metriche AUC-like)
         X_train_tensor = torch.tensor(X_train_3d)
-
-        # Usiamo torch.sigmoid per riconvertire i logits in probabilità 0-1
-
-        train_preds = torch.sigmoid(model(X_train_tensor)).squeeze().numpy()
-
+        train_preds = (
+            torch.sigmoid(model(X_train_tensor)).squeeze(-1).reshape(-1).numpy()
+        )
         train_results = calculate_metrics(y_train_1d, train_preds)
 
-        # Predizioni sul test
+        # Soglia ottimale MCC: appresa SOLO sul validation temporale.
+        # find_best_mcc_threshold controlla esplicitamente che il validation
+        # contenga due classi (len(np.unique(y_va)) == 2): altrimenti
+        # restituisce 0.5 senza ottimizzare.
+        best_thr, val_mcc = 0.5, 0.0
+        if X_va is not None and len(np.unique(y_va)) == 2:
+            X_va_tensor = torch.tensor(X_va)
+            val_proba = (
+                torch.sigmoid(model(X_va_tensor)).squeeze(-1).reshape(-1).numpy()
+            )
+            best_thr, val_mcc = find_best_mcc_threshold(y_va, val_proba)
+        logger.info(
+            f"🎯 Soglia ottimale Transformer (val): {best_thr:.3f} (MCC val: {val_mcc:.4f})"
+        )
 
+        # Predizioni sul test con la soglia appresa sul validation
         test_results = {}
-
         if X_test_3d is not None:
-
-            test_preds = torch.sigmoid(model(X_test_tensor)).squeeze().numpy()
-
-            test_results = calculate_metrics(y_test_1d, test_preds, prefix="test_")
+            test_proba = (
+                torch.sigmoid(model(X_test_tensor)).squeeze(-1).reshape(-1).numpy()
+            )
+            # Predizioni binarie con la soglia MCC (mai 0.5 fisso)
+            test_preds = (test_proba >= best_thr).astype(int)
+            test_results = calculate_metrics(
+                y_test_1d, test_proba, prefix="test_", threshold=best_thr
+            )
 
     results = {
         "model_type": "temporal_transformer",
@@ -1065,6 +1153,12 @@ def train_temporal_transformer(
             "epochs": epochs,
             "learning_rate": learning_rate,
             "sequence_length": sequence_length,
+            # Soglia MCC appresa sul validation: da salvare nei metadati del
+            # modello e riusare in inferenza (scripts/predict_live.py)
+            "best_threshold": best_thr,
+            "validation_mcc": val_mcc,
+            "best_val_loss": float(best_val_loss),
+            "val_split_fraction": 0.15,
         },
         **train_results,
         **test_results,
@@ -1075,7 +1169,7 @@ def train_temporal_transformer(
     return model, results
 
 
-def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "") -> Dict:
+def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "", threshold: float = 0.5) -> Dict:
     """
 
     Calcola varie metriche di classificazione.
@@ -1134,7 +1228,7 @@ def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "") -
 
     # Converte predizioni in classi (soglia 0.5)
 
-    y_pred_class = (y_pred >= 0.5).astype(int)
+    y_pred_class = (y_pred >= threshold).astype(int)
 
     # Matrice di confusione
 
