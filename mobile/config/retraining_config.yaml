@@ -1,11 +1,15 @@
+# Configurazione operativa del retraining automatico (issue #7).
+# Usata da mobile/retrain_models.py (orchestratore) - vedi anche il servizio
+# Docker "retraining" in docker-compose.yml (retraining mensile via cron).
+
 retraining:
   enabled: true
-  schedule: "weekly"
-  interval_seconds: 604800      # 1 settimana
-  min_new_samples: 1000         # Minimo nuovi dati
-  performance_threshold: 0.85   # Soglia R²
-  models_to_retrain:            # Modelli da retrainare
-    - xgboost
+  schedule: "monthly"             # coerente con il cron del container (giorno 1, 03:00)
+  interval_seconds: 2592000       # 30 giorni (trigger temporale per la modalità --continuous)
+  min_new_samples: 1000           # nuovi campioni necessari per il trigger dati
+  performance_threshold: 0.70     # R2 minimo per il deploy; 0.85 era troppo severo per dati sismici
+  models_to_retrain:              # modelli riaddestrati a ogni ciclo
+    - xgboost                     # in retrain_models: GradientBoostingRegressor
     - random_forest
   cross_validation_folds: 5
   test_size: 0.2
@@ -15,9 +19,11 @@ data:
   input_file: scoperte_automatiche.csv.gz
   min_samples: 1000
 
+# Notifiche: la classe FallbackAlertSystem supporta console/file;
+# i canali esterni (slack/email) richiedono l'adapter di mobile.alert_system
 notification:
   enabled: true
-  channels: ["console", "file", "slack"]
+  channels: ["console", "file"]
   success: true
   failure: true
 
