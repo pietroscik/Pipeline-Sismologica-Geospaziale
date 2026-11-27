@@ -282,6 +282,19 @@ def _get_client(url: str, timeout: float = 60):
     return cache[url]
 
 
+def _invalidate_client(url: str):
+    """Rimuove il client cached per questo thread.
+
+    Se il service discovery di ObsPy è fallito alla creazione (rate-limit o
+    errore transitorio), il client resta 'senza dataselect' per sempre:
+    ogni task successivo del thread fallirebbe all'istante. Con l'invalidazione
+    il prossimo tentativo rifà il discovery da zero.
+    """
+    cache = getattr(_THREAD_LOCAL, "clients", None)
+    if cache and url in cache:
+        del cache[url]
+
+
 def _mseed_path_for_window(
     station_dir: Path, network: str, station: str, channel: str, t
 ) -> Path:
@@ -377,10 +390,24 @@ def _download_worker(
                     info["status"] = "no_data"
                     info["error"] = msg
                     return info
-                # Client senza servizio dataselect: fallimento permanente del
-                # client, inutile ritentare su di esso.
+                # 'does not have a dataselect service' può essere sia un mirror
+                # realmente senza dataselect, sia un client INGV il cui service
+                # discovery è fallito transitoriamente (rate-limit con worker
+                # paralleli) e che ObsPy ha registrato come 'senza dataselect'.
+                # Il client cached avvelenato fallirebbe per sempre: al PRIMO
+                # errore lo si invalida e si riprova (il discovery riparte da
+                # zero); se anche il client ricreato manca di dataselect è
+                # genuinamente rotto e si passa al client successivo.
                 if "does not have a dataselect service" in msg:
-                    break
+                    _invalidate_client(candidate)
+                    if attempt > 1:
+                        # secondo errore consecutivo sul medesimo client dopo
+                        # il discovery rifatto: fallimento permanente
+                        break
+                    logger.warning(
+                        f"Client {candidate} senza dataselect: cache invalidata, "
+                        "il prossimo tentativo rifà il service discovery"
+                    )
                 # 4xx permanenti (non 413/429): nessun retry, client successivo
                 if any(code in msg for code in ("400", "401", "403", "404")):
                     break

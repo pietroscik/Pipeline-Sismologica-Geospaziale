@@ -305,26 +305,39 @@ class TestNoDataEClientSenzaDataselect:
         assert info["status"] == "success"
         assert fake_client.call_count == 2
 
-    def test_client_senza_dataselect_non_ritentato(self, tmp_path):
-        """'does not have a dataselect service' è un fallimento permanente
-        del client: break senza retry sul medesimo client."""
+    def test_client_avvelenato_da_discovery_fail_si_recupera(self, tmp_path):
+        """Run reale 2026-11-27 (267/294 failed): con 8 worker paralleli il
+        service discovery di ObsPy può fallire per rate-limit e il client
+        resta cached 'senza dataselect' per tutto il thread, uccidendo ogni
+        task successivo. Ora il primo errore invalida la cache e il retry
+        rifà il discovery: il task riesce."""
         with patch.object(dlw, "Client") as fake_client, \
-             patch.object(dlw.time, "sleep") as fake_sleep:
-            def client_factory(url, timeout=60):
-                if "client1" in str(url):
-                    c = MagicMock()
-                    c.get_waveforms.side_effect = RuntimeError(
-                        "The current client does not have a dataselect service.")
-                    return c
-                c = MagicMock()
-                c.get_waveforms.return_value = make_fake_stream()
-                return c
-            fake_client.side_effect = client_factory
-            info = call_worker(tmp_path, client_urls=["fake://client1",
-                                                      "fake://client2"])
+             patch.object(dlw.time, "sleep"):
+            broken = MagicMock()
+            broken.get_waveforms.side_effect = RuntimeError(
+                "The current client does not have a dataselect service.")
+            working = MagicMock()
+            working.get_waveforms.return_value = make_fake_stream()
+            fake_client.side_effect = [broken, working]
+            info = call_worker(tmp_path)
         assert info["status"] == "success"
+        # il client avvelenato è stato invalidato e ricreato
         assert fake_client.call_count == 2
-        fake_sleep.assert_not_called()  # nessun backoff su client rotto
+
+    def test_client_avvelenato_invalida_la_cache(self, tmp_path):
+        """Dopo l'errore dataselect-missing la cache del thread NON deve più
+        contenere il client rotto."""
+        with patch.object(dlw, "Client") as fake_client, \
+             patch.object(dlw.time, "sleep"):
+            fake_client.return_value.get_waveforms.side_effect = RuntimeError(
+                "The current client does not have a dataselect service.")
+            info = call_worker(tmp_path)
+        assert info["status"] == "failed"
+        # 2 tentativi: il primo invalida la cache, il secondo rifà il
+        # discovery; anche il secondo client è rotto -> break (permanente)
+        assert fake_client.call_count == 2
+        cache = getattr(dlw._THREAD_LOCAL, "clients", {})
+        assert "fake://client" not in cache
 
     def test_statistiche_includono_no_data(self, tmp_path):
         """Il conteggio finale deve distinguere 'no_data' come esito."""
