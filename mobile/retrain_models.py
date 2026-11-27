@@ -15,6 +15,8 @@ import joblib
 import numpy as np
 import pandas as pd
 import yaml
+
+from path_utils import PROJECT_ROOT
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import cross_val_score, train_test_split
@@ -84,7 +86,12 @@ class DataLoader:
     def __init__(self, config: RetrainingConfig):
         self.config = config
     def load_data(self):
-        input_path = Path(self.config.get("data", "input_dir")) / self.config.get(
+        input_dir = Path(self.config.get("data", "input_dir"))
+        if not input_dir.is_absolute():
+            # i path relativi sono risolti rispetto alla root del progetto,
+            # non rispetto alla cwd di esecuzione
+            input_dir = PROJECT_ROOT / input_dir
+        input_path = input_dir / self.config.get(
             "data", "input_file"
         )
         if not input_path.exists():
@@ -157,6 +164,57 @@ class FallbackModelVersionManager:
     def load_model(self, model_type: str, version: str):
         return joblib.load(self.models_dir / model_type / version / "model.joblib")
 
+class ModelVersioningAdapter:
+    """Adapter: interfaccia usata da RetrainingOrchestrator sopra il sistema di
+    versioning reale (mobile.model_versioning.ModelVersionManager), per model_type.
+
+    Contratto esposto (stesso di FallbackModelVersionManager):
+    - get_latest_version(model_type) / get_next_version(model_type)
+    - save_model(model, model_type, version, metrics) -> Path del model.joblib
+    - load_model(model_type, version) -> modello
+    - models_dir: directory base dei modelli
+
+    Compatibilità: scrive sia performance.json (letto dal monitor) sia
+    metrics.json (letto dal trigger prestazioni del retraining), e aggiorna
+    il symlink 'current' gestito da ModelVersionManager.
+    """
+
+    def __init__(self, models_dir: Path):
+        from mobile.model_versioning import ModelVersionManager
+
+        self.models_dir = Path(models_dir)
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        self._manager_cls = ModelVersionManager
+
+    def _manager(self, model_type: str):
+        return self._manager_cls(
+            model_type=model_type, base_dir=self.models_dir, use_mlflow=False
+        )
+
+    def get_latest_version(self, model_type: str) -> Optional[str]:
+        return self._manager(model_type).get_latest_version()
+
+    def get_next_version(self, model_type: str) -> str:
+        return self._manager(model_type).get_next_version()
+
+    def save_model(self, model, model_type: str, version: str, metrics: Dict) -> Path:
+        manager = self._manager(model_type)
+        saved_version = manager.save_model(
+            model,
+            metadata={"trained_by": "retraining", "model_type": model_type},
+            performance=metrics,
+            version=version,
+        )
+        version_dir = manager.models_dir / saved_version
+        # metrics.json: alias per il trigger prestazioni del retraining
+        with open(version_dir / "metrics.json", "w") as f:
+            json.dump(metrics, f, indent=2)
+        return version_dir / "model.joblib"
+
+    def load_model(self, model_type: str, version: str):
+        model, _ = self._manager(model_type).load_model(version)
+        return model
+
 class FallbackAlertSystem:
     def __init__(self, config: RetrainingConfig):
         self.config = config
@@ -174,15 +232,21 @@ class RetrainingOrchestrator:
         self.data_loader = DataLoader(config)
         self.model_trainer = ModelTrainer(config)
         self.model_evaluator = ModelEvaluator(config)
-        # NOTA: le classi Fallback* sono usate direttamente, non come fallback.
-        # mobile.model_versioning.ModelVersionManager e mobile.alert_system.AlertSystem
-        # hanno API incompatibili con l'interfaccia usata qui (get_next_version,
-        # save_model(model, type, version, metrics), send_alert(msg, type)).
-        # L'integrazione con i moduli reali è un follow-up dell'issue #7:
-        # serve un adapter o l'allineamento delle due interfacce.
-        self.model_version_manager = FallbackModelVersionManager(
-            models_dir=Path("mobile") / "models"
-        )
+        # Versioning: si usa il sistema reale (mobile.model_versioning) tramite
+        # ModelVersioningAdapter, che espone l'interfaccia dell'orchestratore.
+        # Fallback solo se l'import fallisce.
+        try:
+            self.model_version_manager = ModelVersioningAdapter(
+                models_dir=Path("mobile") / "models"
+            )
+        except ImportError:
+            self.model_version_manager = FallbackModelVersionManager(
+                models_dir=Path("mobile") / "models"
+            )
+        # AlertSystem usa la classe Fallback locale: l'API di
+        # mobile.alert_system.AlertSystem (check_threshold/trigger_alert) non
+        # espone send_alert(message, alert_type). L'allineamento è un follow-up
+        # dell'issue #7.
         self.alert_system = FallbackAlertSystem(config)
         self.runs_dir = Path("runs") / "retraining"
         self.runs_dir.mkdir(parents=True, exist_ok=True)
