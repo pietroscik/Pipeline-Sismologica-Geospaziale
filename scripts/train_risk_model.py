@@ -11,7 +11,6 @@ import joblib
 import duckdb
 import numpy as np
 import pandas as pd
-from imblearn.over_sampling import SMOTE
 
 # Aggiungiamo la root del progetto e la cartella mobile al path per risolvere le dipendenze
 
@@ -363,22 +362,6 @@ def prepare_features(
     return X, y
 
 
-def apply_smote(X: pd.DataFrame, y: pd.Series) -> Tuple[pd.DataFrame, pd.Series]:
-    """Applica SMOTE per bilanciare le classi."""
-
-    logger.info("⚖️ Applicazione SMOTE per bilanciamento classi...")
-
-    # Gestione NaN prima di SMOTE
-
-    X = X.fillna(0)
-
-    sm = SMOTE(random_state=42)
-
-    X_res, y_res = sm.fit_resample(X, y)
-
-    logger.info(f"   Originali: {len(X)}, Bilanciati: {len(X_res)}")
-
-    return X_res, y_res
 
 
 def train_xgboost(
