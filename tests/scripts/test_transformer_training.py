@@ -113,7 +113,10 @@ class TestTrainTemporalTransformer:
         assert "best_threshold" in params
         assert 0.05 <= params["best_threshold"] <= 0.95
         assert "validation_mcc" in params
-        assert "best_val_loss" in params
+        # Criterio di checkpointing: MCC sul validation (scelto dopo la run
+        # reale del 2026-11-27 in cui la val loss crescente selezionava
+        # sistematicamente i pesi dell'epoca 1)
+        assert params["checkpoint_criterion"] == "val_mcc"
         assert params["val_split_fraction"] == 0.15
 
         # Le metriche del test sono state calcolate (non necessariamente buone
@@ -140,3 +143,16 @@ class TestTrainTemporalTransformer:
         # Il validation contiene gli ULTIMI campioni (ordine temporale)
         np.testing.assert_array_equal(X_va[0], X3d[val_split])
         assert len(X_va) == len(X3d) - val_split
+
+
+class TestMccFallbackDegenerato:
+    """Regressione run reale 2026-11-27: modello che predice ~0 per tutto il
+    validation -> tutte le soglie degeneri -> la funzione restituiva
+    MCC -1.0 invece di 0.0."""
+
+    def test_tutte_soglie_degeneri_mcc_zero(self):
+        y_true = np.array([0, 1, 0, 1] * 10)
+        y_proba = np.full(40, 0.01)  # tutto sotto qualsiasi soglia
+        thr, mcc = trm.find_best_mcc_threshold(y_true, y_proba)
+        assert thr == 0.5
+        assert mcc == 0.0  # mai -1.0
