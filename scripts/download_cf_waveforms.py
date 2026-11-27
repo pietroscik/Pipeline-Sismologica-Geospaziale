@@ -367,6 +367,20 @@ def _download_worker(
                     info["status"] = "oversize"
                     info["error"] = msg
                     return info
+                # 204 "No data available" è un esito PERMANENTE e informativo:
+                # quella stazione/canale/finestra non ha dati, né da questo client
+                # né dai mirror. Nessun retry, nessun client successivo.
+                # (ObsPy riporta sempre "HTTP Status code: 204" nel messaggio;
+                # non si può matchare "No data available" perché compare anche
+                # nei 404, che vanno invece gestiti come 4xx.)
+                if "204" in msg:
+                    info["status"] = "no_data"
+                    info["error"] = msg
+                    return info
+                # Client senza servizio dataselect: fallimento permanente del
+                # client, inutile ritentare su di esso.
+                if "does not have a dataselect service" in msg:
+                    break
                 # 4xx permanenti (non 413/429): nessun retry, client successivo
                 if any(code in msg for code in ("400", "401", "403", "404")):
                     break
@@ -521,8 +535,9 @@ def download_waveforms() -> None:
             except Exception as e:
                 logger.error(f"Eccezione inattesa nel worker: {e}")
 
-    # Statistiche finali per esito (success/skipped/oversize/failed/dry-run):
-    # 'skipped' indica i file già presenti ripresi da una precedente esecuzione.
+    # Statistiche finali per esito (success/skipped/oversize/no_data/failed/dry-run):
+    # 'skipped' indica i file già presenti ripresi da una precedente esecuzione,
+    # 'no_data' le finestre senza dati (204) individuate subito senza retry.
     counts: dict = {}
     for res in summary:
         status = res.get("status", "failed")

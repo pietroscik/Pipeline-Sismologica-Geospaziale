@@ -257,3 +257,84 @@ class TestOversizeFragmentation:
         assert second["status"] == "skipped" or second["status"] == "success"
         files = list(tmp_path.glob("*.mseed"))
         assert len(files) == 4  # nessun duplicato
+
+
+class TestNoDataEClientSenzaDataselect:
+    """Run reale 2026-11-27 (HHZ 147 task): il 204 'No data available'
+    veniva ritentato 4 volte x 3 client (~3-4 min sprecati per task) e i
+    mirror senza dataselect fallivano con retry inutili. Ora entrambi sono
+    esiti permanenti gestiti subito."""
+
+    def test_204_no_data_senza_retry(self, tmp_path):
+        """Un 204 è permanente: status 'no_data', UNA sola chiamata,
+        nessun retry né passaggio ai client successivi."""
+        with patch.object(dlw, "Client") as fake_client, \
+             patch.object(dlw.time, "sleep") as fake_sleep:
+            def client_factory(url, timeout=60):
+                c = MagicMock()
+                c.get_waveforms.side_effect = RuntimeError(
+                    "No data available for request.\n"
+                    "HTTP Status code: 204\n"
+                    "Detailed response of server:")
+                return c
+            fake_client.side_effect = client_factory
+            info = call_worker(tmp_path, client_urls=["fake://a",
+                                                       "fake://b"])
+        assert info["status"] == "no_data"
+        # un solo tentativo sul primo client, il secondo nemmeno provato
+        assert fake_client.call_count == 1
+        fake_sleep.assert_not_called()
+
+    def test_404_resta_distinto_da_204(self, tmp_path):
+        """Il 404 contiene anch'esso 'No data available' ma deve restare un
+        4xx permanente: passa al client successivo, NON diventa 'no_data'."""
+        with patch.object(dlw, "Client") as fake_client, \
+             patch.object(dlw.time, "sleep"):
+            def client_factory(url, timeout=60):
+                if "client1" in str(url):
+                    c = MagicMock()
+                    c.get_waveforms.side_effect = RuntimeError(
+                        "404 No data available for request")
+                    return c
+                c = MagicMock()
+                c.get_waveforms.return_value = make_fake_stream()
+                return c
+            fake_client.side_effect = client_factory
+            info = call_worker(tmp_path, client_urls=["fake://client1",
+                                                      "fake://client2"])
+        assert info["status"] == "success"
+        assert fake_client.call_count == 2
+
+    def test_client_senza_dataselect_non_ritentato(self, tmp_path):
+        """'does not have a dataselect service' è un fallimento permanente
+        del client: break senza retry sul medesimo client."""
+        with patch.object(dlw, "Client") as fake_client, \
+             patch.object(dlw.time, "sleep") as fake_sleep:
+            def client_factory(url, timeout=60):
+                if "client1" in str(url):
+                    c = MagicMock()
+                    c.get_waveforms.side_effect = RuntimeError(
+                        "The current client does not have a dataselect service.")
+                    return c
+                c = MagicMock()
+                c.get_waveforms.return_value = make_fake_stream()
+                return c
+            fake_client.side_effect = client_factory
+            info = call_worker(tmp_path, client_urls=["fake://client1",
+                                                      "fake://client2"])
+        assert info["status"] == "success"
+        assert fake_client.call_count == 2
+        fake_sleep.assert_not_called()  # nessun backoff su client rotto
+
+    def test_statistiche_includono_no_data(self, tmp_path):
+        """Il conteggio finale deve distinguere 'no_data' come esito."""
+        summary = [
+            {"status": "success"},
+            {"status": "no_data"}, {"status": "no_data"},
+            {"status": "skipped"},
+        ]
+        counts = {}
+        for res in summary:
+            status = res.get("status", "failed")
+            counts[status] = counts.get(status, 0) + 1
+        assert counts == {"success": 1, "no_data": 2, "skipped": 1}

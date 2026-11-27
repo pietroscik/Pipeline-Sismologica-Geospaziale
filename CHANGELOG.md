@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- Test flaky del Transformer: aggiunto `torch.manual_seed` e allineato il
+  range del check `best_threshold` alla griglia MCC [0.01, 0.95] (PR #41
+  aveva esteso la griglia ma non l'assert del test)
+- Downloader FDSN: il 204 "No data available" è ora trattato come esito
+  permanente (`no_data`) senza retry né passaggio ai mirror — in precedenza
+  ogni finestra vuota sprecava ~3-4 minuti di backoff inutili (run reale
+  2026-11-27, 147 task HHZ)
+- Downloader FDSN: l'errore "does not have a dataselect service" interrompe
+  subito il client corrente senza retry (fallimento permanente del client)
+
+### Changed
+- `config.yaml`: rimossi i mirror IRIS/ORFEUS (URL senza servizio dataselect e
+  senza dati della rete IV); il fallback manuale resta documentato nel config
+
 ## [0.2.0] - 2026-08-29
 
 ### Added
