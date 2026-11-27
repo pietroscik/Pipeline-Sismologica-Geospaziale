@@ -182,6 +182,13 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
                 max(energia_max) OVER (ORDER BY timestamp ROWS BETWEEN 1 FOLLOWING AND 24 FOLLOWING) AS max_energia_futura,
                 CASE WHEN max(energia_max) OVER (ORDER BY timestamp ROWS BETWEEN 1 FOLLOWING AND 24 FOLLOWING) > 15.0 THEN 1 ELSE 0 END AS Target_Allarme
             FROM rolling_features
+        ),
+        data_boundary AS (
+            -- Massimo timestamp dei dati grezzi: esclude le ultime 24h dove il
+            -- target non è calcolabile in modo affidabile.
+            -- NOTA: calcolato in un CTE separato perché DuckDB non ammette
+            -- aggregati in una subquery dentro il WHERE.
+            SELECT max(arrival_iso) AS max_ts FROM raw_deltas
         )
         -- 4. Seleziona le colonne finali e aggiunge feature temporali
         SELECT
@@ -198,9 +205,9 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             CASE WHEN extract('dow' from timestamp) IN (0, 6) THEN 1 ELSE 0 END AS is_weekend,
             NULL as bvalue_rolling_24h, -- Manteniamo la colonna per compatibilità, ma la calcoleremo in Python
             Target_Allarme
-        FROM target_generation
+        FROM target_generation, data_boundary
         -- Escludiamo le ultime 24 ore dove non possiamo calcolare un target affidabile
-        WHERE timestamp < (SELECT max(timestamp) FROM raw_deltas) - INTERVAL '24' HOUR
+        WHERE timestamp < data_boundary.max_ts - INTERVAL '24' HOUR
     )
     -- Seleziona tutte le colonne dalla tabella delle feature storiche
     -- e le unisce con quelle generate al momento.
