@@ -33,6 +33,13 @@ mapping:
 
 fdsn:
   client: "INGV"
+  # Client FDSN di fallback provati in ordine se il precedente non risponde
+  # (503/timeout transitori sono frequenti): INGV (primario), IRIS e ORFEUS
+  # possono esporre specchi di parte della rete IV.
+  clients:
+    - "https://webservices.ingv.it"
+    - "https://service.iris.edu"
+    - "https://orfeus-eu.org"
   network: "IV"
   # Lista di stazioni di default (es. Campi Flegrei). Puoi cambiarla o usare file esterni.
   stations: [
