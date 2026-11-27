@@ -945,7 +945,10 @@ def find_best_mcc_threshold(y_true: np.ndarray, y_proba: np.ndarray, grid_size: 
         )
         return 0.5, 0.0
 
-    thresholds = np.linspace(0.05, 0.95, grid_size)
+    # Griglia estesa a [0.01, 0.95]: nel run reale del 2026-11-27 il Transformer
+    # aveva PR-AUC 0.93 ma probabilità dei positivi sotto 0.05 -> tutte le soglie
+    # della vecchia griglia (partendo da 0.05) erano degeneri e l'MCC restava 0.
+    thresholds = np.linspace(0.01, 0.95, grid_size)
     best_thr, best_mcc = 0.5, -1.0
     for thr in thresholds:
         preds = (y_proba >= thr).astype(int)

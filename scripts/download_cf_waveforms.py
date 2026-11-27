@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 import concurrent.futures
 import csv
 from datetime import datetime
@@ -288,36 +289,52 @@ def _download_worker(
         info["status"] = "dry-run"
         return info
 
+    # Skip-if-exists (resume): i file sono nomati deterministicamente per
+    # finestra, quindi un file già scaricato e non vuoto non va riscaricato.
+    # Rilanciare il comando dopo un fallimento riprende da dove si era fermati.
+    if fpath.exists() and fpath.stat().st_size > 0:
+        info["status"] = "skipped"
+        return info
+    # Retry con backoff esponenziale per ogni client: i servizi FDSN (INGV in
+    # particolare) rispondono spesso con 503/timeout transitori. 3 tentativi
+    # per client con pause 5s, 15s, 45s; gli errori 4xx (non 413/429) passano
+    # subito al client successivo.
+    retry_delays = (5, 15, 45)
     for candidate in client_urls:
-        try:
-            logger.info(f"Provo client FDSN: {candidate}")
-            client = Client(candidate, timeout=60)
-            st = client.get_waveforms(
-                network=network,
-                station=station,
-                location=location,
-                channel=channel,
-                starttime=window_start,
-                endtime=window_end,
-            )
-            st.write(str(fpath), format="MSEED")
-            info["status"] = "success"
-            info["client"] = candidate
-            return info
-        except Exception as exc:
-            msg = str(exc)
-            logger.warning(f"Client {candidate} fallito: {msg}")
-            # Detect common "too much data / 413" responses and signal oversize
-            if (
-                "Request Entity Too Large" in msg
-                or "maximum number" in msg
-                or "413" in msg
-            ):
-                info["status"] = "oversize"
-                info["error"] = msg
+        for attempt, delay in enumerate((0,) + retry_delays, start=1):
+            if delay:
+                logger.info(f"Attesa {delay}s prima del retry {attempt} su {candidate}")
+                time.sleep(delay)
+            try:
+                logger.info(f"Provo client FDSN: {candidate} (tentativo {attempt})")
+                client = Client(candidate, timeout=60)
+                st = client.get_waveforms(
+                    network=network,
+                    station=station,
+                    location=location,
+                    channel=channel,
+                    starttime=window_start,
+                    endtime=window_end,
+                )
+                st.write(str(fpath), format="MSEED")
+                info["status"] = "success"
+                info["client"] = candidate
                 return info
-            # otherwise continue to next candidate
-
+            except Exception as exc:
+                msg = str(exc)
+                logger.warning(f"Client {candidate} fallito (tentativo {attempt}): {msg}")
+                # Detect common "too much data / 413" responses and signal oversize
+                if (
+                    "Request Entity Too Large" in msg
+                    or "maximum number" in msg
+                    or "413" in msg
+                ):
+                    info["status"] = "oversize"
+                    info["error"] = msg
+                    return info
+                # 4xx permanenti (non 413/429): nessun retry, client successivo
+                if any(code in msg for code in ("400", "401", "403", "404")):
+                    break
     info["error"] = "Nessun client FDSN risponde"
     return info
 
@@ -412,6 +429,14 @@ def download_waveforms() -> None:
                     oversize_tasks.append(t)
             except Exception as e:
                 logger.error(f"Eccezione inattesa nel worker: {e}")
+
+    # Statistiche finali per esito (success/skipped/oversize/failed/dry-run):
+    # 'skipped' indica i file già presenti ripresi da una precedente esecuzione.
+    counts: dict = {}
+    for res in summary:
+        status = res.get("status", "failed")
+        counts[status] = counts.get(status, 0) + 1
+    logger.info(f"Download completato. Esiti: {counts}")
 
     if args.dry_run:
 
