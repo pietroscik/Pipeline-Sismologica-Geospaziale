@@ -98,6 +98,9 @@ class TestCalculateMetricsThreshold:
 
 class TestTrainTemporalTransformer:
     def test_training_completo_con_checkpoint_e_soglia(self):
+        # Seed torch: l'inizializzazione dei pesi è altrimenti non
+        # deterministica e questo test era flaky (~1 fallimento su 3)
+        torch.manual_seed(42)
         X, y = make_binary_dataset(250)
         X_test, y_test = make_binary_dataset(60)
 
@@ -111,7 +114,9 @@ class TestTrainTemporalTransformer:
         # La soglia MCC è nei parametri salvati (per i metadati del modello)
         params = results["params"]
         assert "best_threshold" in params
-        assert 0.05 <= params["best_threshold"] <= 0.95
+        # La griglia MCC parte da 0.01 (PR #41): il range del check deve
+        # essere coerente con la griglia, non con il vecchio min 0.05
+        assert 0.01 <= params["best_threshold"] <= 0.95
         assert "validation_mcc" in params
         # Criterio di checkpointing: MCC sul validation (scelto dopo la run
         # reale del 2026-11-27 in cui la val loss crescente selezionava
