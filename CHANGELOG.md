@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- Added 85 new tests across the critical modules previously uncovered: `ingest_runs_to_db.py` (13), `run_pipeline.py` helper functions (23), `mobile/model_versioning.py` (18), `mobile/monitor_campi_flegrei.py` (22), `mobile/retrain_models.py` + `scripts/monthly_retrain_job.py` (30) — total suite now 181 tests (issue #4, #6, #7)
+- Added `setup_monitoring_logger()` to `mobile/logging_config.py`
+- Removed binary artifacts from git tracking: `mlruns/`, `mlflow.db`, `*.duckdb`, `*.joblib`, `*.skops` now gitignored; files remain on disk (`git rm --cached`, history untouched)
+
+### Fixed
+- Fixed broken `ml_features_ready_view` SQL in `ingest_runs_to_db.py`: DuckDB rejects aggregate subqueries inside `WHERE`; moved the `max(timestamp)` computation to a `data_boundary` CTE
+- Fixed missing `shutil` import in `mobile/model_versioning.py` (flake8 F821 failing CI)
+- Fixed `mobile/model_versioning.py` broken `current` symlink handling: `delete_version` checked the symlink after deleting its target (`exists()` is `False` for dangling symlinks, so the automatic rollback never ran) and `rollback`/`save_model` used `exists()` instead of `is_symlink()`, causing `FileExistsError` on replace
+- Fixed `mobile/monitor_campi_flegrei.py` ImportError: the module referenced a non-existent API (`AlertConfig`, `AlertMessage`, `send_alert`) and a missing `setup_monitoring_logger`; now uses the real `AlertSystem` API (`trigger_alert`)
+- Fixed `mobile/retrain_models.py` silent configuration failure: all `RetrainingConfig.get()` call sites passed defaults positionally (interpreted as keys), so every default silently returned `None`; the temporal trigger crashed into a bare `except` and the performance trigger used an undefined `self.models_dir`, never firing
+- Fixed `mobile/retrain_models.py` imports of non-existent top-level modules (`model_version_manager`, `alert_system`); the `Fallback*` classes are now used directly, with a documented follow-up to integrate `mobile.model_versioning`
+- Normalized `mobile/retrain_models.py` line endings to LF (mixed CR/CR-CR, violating `.editorconfig`)
+- CI: Codecov upload failures (429 rate limit, no repository token) no longer fail the build
+
+---
+
 ## [0.2.0] - 2026-08-29
 
 ### Added
