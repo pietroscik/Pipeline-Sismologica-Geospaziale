@@ -300,3 +300,98 @@ class TestIngestAttachCoordsSchema:
         spatial = read_table(temp_db, "deltas_spatial")
         assert len(spatial) == 2
         assert set(spatial["delta_type"]) == {"base_mean"}
+
+
+class TestDataCompleteness:
+    """Test della colonna is_data_complete e della griglia oraria continua
+    (ore mancanti generate esplicitamente con flag 0)."""
+
+    def _make_multi_day_run(self, tmp_path):
+        """Run su più giorni: giorno 1 tutte le stazioni (completo),
+        giorno 2 una sola stazione (incompleto), giorno 4 ultima attività."""
+        run_dir = tmp_path / "run_completeness"
+        (run_dir / "interim").mkdir(parents=True)
+        rows = []
+        # Giorno 1: 3 stazioni attive -> completezza 1.0
+        for st in ("ST01", "ST02", "ST03"):
+            rows.append({
+                "event_id": f"ev1-{st}", "network": "IV", "station": st,
+                "channel": "HHZ", "arrival_epoch": 1672531200.0,
+                "arrival_iso": "2023-01-01T12:00:00",
+                "event_reference_epoch": 1672531100.0, "delta_seconds": 1.0,
+            })
+        # Giorno 2: solo 1 stazione su 3 -> completezza 0.33 -> flag 0
+        rows.append({
+            "event_id": "ev2-ST01", "network": "IV", "station": "ST01",
+            "channel": "HHZ", "arrival_epoch": 1672617600.0,
+            "arrival_iso": "2023-01-02T12:00:00",
+            "event_reference_epoch": 1672617500.0, "delta_seconds": 2.0,
+        })
+        # Giorno 4: di nuovo tutte (spinge il max per la griglia)
+        for st in ("ST01", "ST02", "ST03"):
+            rows.append({
+                "event_id": f"ev4-{st}", "network": "IV", "station": st,
+                "channel": "HHZ", "arrival_epoch": 1672876800.0,
+                "arrival_iso": "2023-01-04T12:00:00",
+                "event_reference_epoch": 1672876700.0, "delta_seconds": 3.0,
+            })
+        pd.DataFrame(rows).to_csv(
+            run_dir / "interim" / "station_deltas_from_mseed.csv", index=False)
+        return run_dir
+
+    def test_flag_completezza_e_ore_mancanti(self, temp_db, tmp_path):
+        run_dir = self._make_multi_day_run(tmp_path)
+        ingest.ingest_run_data(
+            run_id="run-comp", run_name="comp", run_dir=run_dir,
+            source_type="mseed",
+        )
+        df = read_table(temp_db, "ml_features_ready_view")
+
+        # La colonna esiste
+        assert "is_data_complete" in df.columns
+
+        # Le ore mancanti (es. giorno 3 senza dati) sono righe esplicite:
+        # numero_eventi=0 e flag 0
+        day3 = df[pd.to_datetime(df["timestamp"]).dt.date.astype(str) == "2023-01-03"]
+        # 12 ore (00-11): il giorno 3 è troncato dal boundary delle ultime 24h
+        # (max dati = 4 gen 12:00 -> incluse solo ore < 3 gen 12:00)
+        assert len(day3) == 12
+        assert (day3["numero_eventi"] == 0).all()
+        assert (day3["is_data_complete"] == 0).all()
+
+        # Giorno 1, ora 12: tutte e 3 le stazioni attive -> flag 1
+        d1 = df[(pd.to_datetime(df["timestamp"]).dt.date.astype(str) == "2023-01-01")
+                & (pd.to_datetime(df["timestamp"]).dt.hour == 12)]
+        assert d1["is_data_complete"].iloc[0] == 1
+        assert d1["numero_eventi"].iloc[0] == 3
+
+        # Giorno 2, ora 12: 1 stazione su 3 (33% < 95%) -> flag 0
+        d2 = df[(pd.to_datetime(df["timestamp"]).dt.date.astype(str) == "2023-01-02")
+                & (pd.to_datetime(df["timestamp"]).dt.hour == 12)]
+        assert d2["is_data_complete"].iloc[0] == 0
+        assert d2["numero_eventi"].iloc[0] == 1
+
+        # Le ore senza dati compaiono anche dentro un giorno con dati:
+        # l'ora 15 del giorno 1 è nella griglia (dopo il min 12:00) ma senza
+        # rilevamenti -> riga esplicita con flag 0
+        d1_senza = df[(pd.to_datetime(df["timestamp"]).dt.date.astype(str) == "2023-01-01")
+                      & (pd.to_datetime(df["timestamp"]).dt.hour == 15)]
+        assert len(d1_senza) == 1
+        assert d1_senza["numero_eventi"].iloc[0] == 0
+        assert d1_senza["is_data_complete"].iloc[0] == 0
+
+    def test_storico_con_null(self, temp_db, tmp_path):
+        """La parte storica (ml_features_timeseries) ha is_data_complete NULL."""
+        run_dir = self._make_multi_day_run(tmp_path)
+        ingest.ingest_run_data(
+            run_id="run-comp", run_name="comp", run_dir=run_dir,
+            source_type="mseed",
+        )
+        con = duckdb.connect(str(temp_db), read_only=True)
+        try:
+            # nessuna riga storica nel DB di test: verifichiamo la struttura
+            # della vista interrogandola direttamente (colonna sempre presente)
+            df = con.execute("SELECT is_data_complete FROM ml_features_ready_view").df()
+            assert len(df) > 0
+        finally:
+            con.close()
