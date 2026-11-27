@@ -90,7 +90,7 @@ def run_cmd(
 
         if result.stderr:
 
-            logger.warning(f"Stderr: {result.stderr[:500]}")  # Log first 500 chars
+            logger.warning(f"Stderr: {result.stderr[:4000]}")  # Log first 500 chars
 
         return True
 
@@ -122,7 +122,7 @@ def run_cmd(
 
         if exc.stderr:
 
-            logger.error(f"Stderr: {exc.stderr[:500]}")
+            logger.error(f"Stderr: {exc.stderr[:4000]}")
 
         raise
 

@@ -338,6 +338,16 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
     deltas_spatial_path = run_dir / "processed" / "deltas_spatial.csv"
     if deltas_spatial_path.exists():
         df_spatial = pd.read_csv(deltas_spatial_path)
+        # Compatibilità di schema: attach_coords_to_deltas.py produce le
+        # coordinate metriche come x_m/y_m, lo schema del DB usa
+        # easting/northing; network/elevation/location possono mancare.
+        if 'easting' not in df_spatial.columns and 'x_m' in df_spatial.columns:
+            df_spatial['easting'] = df_spatial['x_m']
+        if 'northing' not in df_spatial.columns and 'y_m' in df_spatial.columns:
+            df_spatial['northing'] = df_spatial['y_m']
+        for _optional_col in ('network', 'elevation', 'location'):
+            if _optional_col not in df_spatial.columns:
+                df_spatial[_optional_col] = None
         # Selezioniamo solo le colonne relative alle stazioni e rimuoviamo i duplicati
         df_stations = df_spatial[[
             'station', 'network', 'latitude', 'longitude', 
@@ -361,6 +371,11 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
     if deltas_spatial_path.exists():
         # Rileggiamo il file per sicurezza
         df_spatial_full = pd.read_csv(deltas_spatial_path)
+        # Stessa normalizzazione colonne di attach_coords: x_m/y_m -> easting/northing
+        if 'easting' not in df_spatial_full.columns and 'x_m' in df_spatial_full.columns:
+            df_spatial_full['easting'] = df_spatial_full['x_m']
+        if 'northing' not in df_spatial_full.columns and 'y_m' in df_spatial_full.columns:
+            df_spatial_full['northing'] = df_spatial_full['y_m']
         df_spatial_full['run_id'] = run_id
         df_spatial_full['reference_date'] = pd.to_datetime(datetime.now(timezone.utc).date())
         # Creiamo le righe per l'inserimento
