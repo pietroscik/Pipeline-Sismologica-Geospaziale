@@ -44,7 +44,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
-from mobile.alert_system import AlertConfig, AlertMessage, AlertSystem
+from mobile.alert_system import AlertSystem
 from mobile.logging_config import setup_monitoring_logger
 from mobile.model_versioning import ModelVersionManager, get_model_manager
 from path_utils import PROJECT_ROOT
@@ -128,14 +128,10 @@ class CampiFlegreiMonitor:
         try:
             env = os.getenv("ENVIRONMENT", "prod")
             config_path = PROJECT_ROOT / "mobile/config" / f"alert_config.{env}.yaml"
-            
-            if config_path.exists():
-                config = AlertConfig.from_yaml(str(config_path))
-            else:
-                config = AlertConfig.from_yaml(
-                    str(PROJECT_ROOT / "mobile/config/alert_config.yaml")
-                )
-            self.alert_system = AlertSystem(config)
+
+            if not config_path.exists():
+                config_path = PROJECT_ROOT / "mobile/config" / "alert_config.yaml"
+            self.alert_system = AlertSystem(config_path=str(config_path))
             self.logger.info(f"Alert system initialized with {env} config")
         except Exception as e:
             self.logger.error(f"Failed to initialize alert system: {e}")
@@ -347,20 +343,13 @@ class CampiFlegreiMonitor:
             return False
 
         try:
-            alert_message = AlertMessage(
-                title="Allarme Campi Flegrei",
-                message=message,
-                severity="high" if risk_score > self.risk_threshold * 1.5 else "medium",
-                metadata={
-                    "risk_score": round(risk_score, 4),
-                    "stations_count": stations_count,
-                    "threshold": self.risk_threshold,
-                    "model_version": self.model_version,
-                    "timestamp": datetime.now().isoformat(),
-                },
+            # API reale di AlertSystem: trigger_alert(risk_level, stations, timestamp)
+            result = self.alert_system.trigger_alert(
+                risk_level=risk_score,
+                triggering_stations=stations_count,
+                timestamp=datetime.now().isoformat(),
+                threshold=self.risk_threshold,
             )
-
-            result = self.alert_system.send_alert(alert_message)
             self.logger.info(f"Alert sent: {result}")
             return True
 
