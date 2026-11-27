@@ -297,7 +297,7 @@ class ModelVersionManager:
 
         current_link = self.models_dir / "current"
 
-        if current_link.exists():
+        if current_link.is_symlink():
 
             current_link.unlink()
 
@@ -407,7 +407,10 @@ class ModelVersionManager:
 
         current_link = self.models_dir / "current"
 
-        if current_link.exists():
+        # is_symlink() e non exists(): un symlink rotto (target cancellato)
+        # restituisce exists() == False e va comunque rimosso prima del replace.
+
+        if current_link.is_symlink():
 
             current_link.unlink()
 
@@ -428,11 +431,19 @@ class ModelVersionManager:
 
             return False
 
-        shutil.rmtree(version_dir)
-
+        # Verifica se 'current' punta a questa versione PRIMA della rimozione:
+        # dopo shutil.rmtree il symlink sarebbe rotto e exists() restituirebbe
+        # False, lasciando 'current' dangling e load_model() in errore.
         current_link = self.models_dir / "current"
 
-        if current_link.exists() and current_link.resolve() == version_dir:
+        was_current = (
+            current_link.is_symlink()
+            and current_link.resolve() == version_dir.resolve()
+        )
+
+        shutil.rmtree(version_dir)
+
+        if was_current:
 
             latest = self.get_latest_version()
 
