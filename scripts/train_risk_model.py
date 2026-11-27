@@ -83,7 +83,7 @@ def calculate_rolling_b_value(series: pd.Series, window_size: int) -> pd.Series:
         else:
             b_values.append(np.nan)
 
-    return pd.Series(b_values, index=series.index).fillna(method='ffill').fillna(0)
+    return pd.Series(b_values, index=series.index).ffill().fillna(0)
 
 def load_data_from_db() -> pd.DataFrame:
     """
@@ -526,12 +526,24 @@ def train_xgboost(
     results = {
         "model_type": "xgboost",
         "params": params,
-        "best_iteration": model.best_iteration,
+        "best_iteration": (
+            model.best_iteration
+            if model.best_iteration is not None
+            else getattr(model, "num_boosted_rounds", lambda: None)()
+        ),
         **train_results,
         **test_results,
     }
 
-    logger.info(f"✅ Modello XGBoost addestrato (iterazioni: {model.best_iteration})")
+    # best_iteration è None quando l'early stopping non è mai scattato o la
+    # metrica di eval non è mai migliorata (visto nel run reale come
+    # 'iterazioni: 0'); in quel caso riportiamo i round effettivi eseguiti
+    num_rounds = getattr(model, "num_boosted_rounds", lambda: None)()
+    best_iter = model.best_iteration
+    logger.info(
+        f"✅ Modello XGBoost addestrato (round eseguiti: {num_rounds}, "
+        f"best iteration: {best_iter if best_iter is not None else num_rounds})"
+    )
 
     return model, results
 
@@ -944,6 +956,11 @@ def find_best_mcc_threshold(y_true: np.ndarray, y_proba: np.ndarray, grid_size: 
         if mcc > best_mcc:
             best_mcc = mcc
             best_thr = float(thr)
+    if best_mcc == -1.0:
+        # Nessuna soglia utilizzabile (tutte degeneri): MCC riportato come 0.0,
+        # mai -1.0 (visto nel run reale del 2026-11-27 con modello che prediceva
+        # ~0 per tutto il validation)
+        return 0.5, 0.0
     return best_thr, float(best_mcc)
 
 
@@ -1050,8 +1067,16 @@ def train_temporal_transformer(
         y_test_tensor = torch.tensor(y_test_1d).unsqueeze(1)
 
     # --- Ciclo di training: clipping + best-epoch checkpoint + early stopping ---
-    best_val_loss = float("inf")
+    # Checkpoint per MCC sul validation (criterio di selezione): massimizza la
+    # metrica effettivamente usata in produzione invece della loss. Su dataset
+    # sbilanciati la val loss può crescere per effetto del pos_weight mentre il
+    # modello sta ancora migliorando la classificazione (run reale 2026-11-27:
+    # val loss 34.5->64.7 con train 0.09->0.0001 selezionava i pesi dell'epoca 1).
+    # Fallback su -train_loss se il validation non è utilizzabile.
+    val_mcc_available = val_loader is not None and len(np.unique(y_va)) == 2
+    best_score = float("-inf")      # MCC su validation (o -train_loss come fallback)
     best_state = None
+    best_thr_checkpoint = 0.5      # soglia MCC associata ai migliori pesi
     patience = 10
     epochs_no_improve = 0
 
@@ -1073,41 +1098,64 @@ def train_temporal_transformer(
         # VALIDATION (fallback su train_loss se la slice temporale è assente)
         model.eval()
         val_loss = 0.0
+        val_proba = None
         with torch.no_grad():
             if val_loader is not None:
+                proba_parts = []
                 for batch_X, batch_y in val_loader:
                     logits = model(batch_X).squeeze(-1)
                     loss = criterion(logits, batch_y.squeeze(-1).float())
                     val_loss += loss.item() * len(batch_X)
+                    proba_parts.append(torch.sigmoid(logits))
                 val_loss /= len(val_loader.dataset)
+                val_proba = torch.cat(proba_parts).reshape(-1).numpy()
             else:
                 val_loss = train_loss
 
         scheduler.step(val_loss)
-        monitor_loss = val_loss if val_loader is not None else train_loss
 
-        # BEST-EPOCH CHECKPOINT: conserva i pesi dell'epoca con loss minore
-        if monitor_loss < best_val_loss - 1e-4:
-            best_val_loss = monitor_loss
+        # BEST-EPOCH CHECKPOINT: score = MCC sul validation (o -train_loss)
+        if val_mcc_available and val_proba is not None:
+            epoch_thr, epoch_mcc = find_best_mcc_threshold(y_va, val_proba)
+            score = epoch_mcc
+        else:
+            epoch_thr, epoch_mcc = 0.5, 0.0
+            score = -train_loss
+
+        if score > best_score + 1e-4:
+            best_score = score
             best_state = copy.deepcopy(model.state_dict())
+            best_thr_checkpoint = epoch_thr
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
                 logger.info(
-                    f"⏹️ Early stopping all'epoca {epoch} (best loss: {best_val_loss:.4f})"
+                    f"⏹️ Early stopping all'epoca {epoch} "
+                    f"(best MCC val: {epoch_mcc:.4f})" if val_mcc_available else
+                    f"⏹️ Early stopping all'epoca {epoch} (best train loss: {-best_score:.4f})"
                 )
                 break
 
         if epoch % 10 == 0 or epoch == 1:
-            logger.info(
-                f"   Epoca [{epoch}/{epochs}] - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f}"
-            )
+            if val_mcc_available:
+                logger.info(
+                    f"   Epoca [{epoch}/{epochs}] - Train Loss: {train_loss:.4f} "
+                    f"- Val Loss: {val_loss:.4f} - Val MCC: {epoch_mcc:.4f}"
+                )
+            else:
+                logger.info(
+                    f"   Epoca [{epoch}/{epochs}] - Train Loss: {train_loss:.4f}"
+                )
 
     # Ripristina i pesi migliori prima di valutare sul test set
     if best_state is not None:
         model.load_state_dict(best_state)
-        logger.info(f"✅ Pesi migliori ripristinati (best loss: {best_val_loss:.4f})")
+        logger.info(
+            f"✅ Pesi migliori ripristinati "
+            f"({'best MCC val: %.4f' % best_score if val_mcc_available else 'best train loss: %.4f' % -best_score}, "
+            f"soglia checkpoint: {best_thr_checkpoint:.3f})"
+        )
 
     # Calcolo metriche finali
     logger.info("📊 Calcolo metriche finali...")
@@ -1124,13 +1172,9 @@ def train_temporal_transformer(
         # find_best_mcc_threshold controlla esplicitamente che il validation
         # contenga due classi (len(np.unique(y_va)) == 2): altrimenti
         # restituisce 0.5 senza ottimizzare.
-        best_thr, val_mcc = 0.5, 0.0
-        if X_va is not None and len(np.unique(y_va)) == 2:
-            X_va_tensor = torch.tensor(X_va)
-            val_proba = (
-                torch.sigmoid(model(X_va_tensor)).squeeze(-1).reshape(-1).numpy()
-            )
-            best_thr, val_mcc = find_best_mcc_threshold(y_va, val_proba)
+        # La soglia del checkpoint MCC è stata appresa sul validation durante
+        # il training con gli stessi (migliori) pesi: riusarla direttamente.
+        best_thr, val_mcc = best_thr_checkpoint, max(best_score, 0.0) if val_mcc_available else (0.5, 0.0)
         logger.info(
             f"🎯 Soglia ottimale Transformer (val): {best_thr:.3f} (MCC val: {val_mcc:.4f})"
         )
@@ -1157,7 +1201,7 @@ def train_temporal_transformer(
             # modello e riusare in inferenza (scripts/predict_live.py)
             "best_threshold": best_thr,
             "validation_mcc": val_mcc,
-            "best_val_loss": float(best_val_loss),
+            "checkpoint_criterion": "val_mcc" if val_mcc_available else "train_loss",
             "val_split_fraction": 0.15,
         },
         **train_results,
