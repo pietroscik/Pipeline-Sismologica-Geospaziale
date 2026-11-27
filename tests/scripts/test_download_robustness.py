@@ -9,6 +9,7 @@ E per la griglia MCC estesa [0.01, 0.95] nel Transformer.
 """
 import importlib.util
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -18,6 +19,14 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+
+@pytest.fixture(autouse=True)
+def reset_client_cache():
+    """La cache dei client FDSN è per-thread e persiste tra i test nel
+    medesimo thread: va azzerata per non contaminare i mock tra test."""
+    dlw._THREAD_LOCAL = threading.local()
+    yield
 
 obspy = pytest.importorskip("obspy")
 
@@ -95,7 +104,9 @@ class TestRetryBackoff:
             ]
             info = call_worker(tmp_path)
         assert info["status"] == "success"
-        assert fake_client.call_count == 2
+        # Client persistente per thread: istanziato UNA volta, riusato per il retry
+        assert fake_client.call_count == 1
+        assert fake_client.return_value.get_waveforms.call_count == 2
         fake_sleep.assert_called()  # backoff applicato
 
     def test_errore_4xx_passa_al_client_successivo(self, tmp_path):
@@ -169,3 +180,80 @@ class TestGrigliaMccEstesa:
         thr, mcc = trm.find_best_mcc_threshold(
             np.array([0, 1, 0, 1] * 10), np.linspace(0.1, 0.9, 40))
         assert 0.01 <= thr <= 0.95
+
+
+class TestOversizeFragmentation:
+    """Frammentazione automatica delle finestre oversize (413): il task non
+    viene più scartato silenziosamente ma scaricato a blocchi più piccoli."""
+
+    def _frag_call(self, tmp_path, **kw):
+        """Invoca _download_with_fragmentation con una finestra di 24h."""
+        from obspy import UTCDateTime
+        defaults = dict(
+            client_urls=["fake://client"],
+            network="IV",
+            location="*",
+            station="CAAM",
+            channel="HHZ",
+            window_start=UTCDateTime(2026, 1, 1),
+            window_end=UTCDateTime(2026, 1, 2),
+            fpath=tmp_path / "20260101T000000_IV_CAAM_HHZ.mseed",
+            dry_run=False,
+        )
+        defaults.update(kw)
+        return dlw._download_with_fragmentation(**defaults)
+
+    def test_oversize_frammentato_e_scaricato(self, tmp_path):
+        """413 sulle finestre >6h, successo su quelle <=6h: la finestra da
+        24h viene spezzata fino a 4 frammenti da 6h, tutti scaricati."""
+        with patch.object(dlw, "Client") as fake_client, \
+             patch.object(dlw.time, "sleep"):
+
+            def fake_get(**k):
+                duration = k["endtime"] - k["starttime"]
+                if duration > 6 * 3600:
+                    raise RuntimeError("413 Request Entity Too Large")
+                return make_fake_stream()
+
+            fake_client.return_value.get_waveforms.side_effect = fake_get
+            info = self._frag_call(tmp_path)
+        assert info["status"] == "success"
+        assert info["fragmented"] is True
+        # 4 frammenti da 6h scritti su disco
+        files = list(tmp_path.glob("*.mseed"))
+        assert len(files) == 4
+
+    def test_oversize_persistente_alla_finestra_minima(self, tmp_path):
+        """413 sistematico: frammentazione fino alla finestra minima (2h),
+        poi oversize riportato onestamente (non silenzioso)."""
+        with patch.object(dlw, "Client") as fake_client, \
+             patch.object(dlw.time, "sleep"):
+            fake_client.return_value.get_waveforms.side_effect = RuntimeError(
+                "413 Request Entity Too Large")
+            info = self._frag_call(tmp_path)
+        assert info["status"] == "oversize"
+        assert info["fragmented"] is True
+        assert "oversize persistente" in info["error"]
+
+    def test_frammenti_riprendibili_con_resume(self, tmp_path):
+        """I frammenti usano lo schema di nomi del task builder: una seconda
+        esecuzione con file frammento già presente li salta (status skipped)."""
+        with patch.object(dlw, "Client") as fake_client, \
+             patch.object(dlw.time, "sleep"):
+
+            def fake_get(**k):
+                duration = k["endtime"] - k["starttime"]
+                if duration > 6 * 3600:
+                    raise RuntimeError("413 Request Entity Too Large")
+                return make_fake_stream()
+
+            fake_client.return_value.get_waveforms.side_effect = fake_get
+            first = self._frag_call(tmp_path)
+            assert first["status"] == "success"
+            # seconda esecuzione: tutti i frammenti esistono -> skip totale
+            second = self._frag_call(tmp_path)
+        # il primo frammento coincide col percorso della finestra originale:
+        # skip-if-exists lo riconosce prima ancora della frammentazione
+        assert second["status"] == "skipped" or second["status"] == "success"
+        files = list(tmp_path.glob("*.mseed"))
+        assert len(files) == 4  # nessun duplicato

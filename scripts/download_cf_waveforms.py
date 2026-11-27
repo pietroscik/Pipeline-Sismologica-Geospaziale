@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import threading
 import time
 import concurrent.futures
 import csv
@@ -261,6 +262,40 @@ def iter_time_windows(
         current = window_end
 
 
+# Finestra minima di frammentazione: sotto le 2 ore non si spezza più
+# (il 413 su finestre piccole indica un limite lato server non risolvibile).
+MIN_FRAGMENT_SECONDS = 2 * 3600.0
+
+# Cache dei client FDSN per thread: l'istanziazione di obspy.Client per ogni
+# task crea overhead di connessione continuo e può sembrare rate-limiting.
+# Ogni worker-thread riusa la stessa sessione per URL.
+_THREAD_LOCAL = threading.local()
+
+
+def _get_client(url: str, timeout: float = 60):
+    cache = getattr(_THREAD_LOCAL, "clients", None)
+    if cache is None:
+        cache = {}
+        _THREAD_LOCAL.clients = cache
+    if url not in cache:
+        cache[url] = Client(url, timeout=timeout)
+    return cache[url]
+
+
+def _mseed_path_for_window(
+    station_dir: Path, network: str, station: str, channel: str, t
+) -> Path:
+    """Nome file deterministico per finestra: stesso schema del task builder,
+    così i frammenti generati dall'oversize sono riprendibili col resume."""
+    fname = (
+        f"{t.strftime('%Y%m%dT%H%M%S')}_"
+        f"{sanitize_filename_component(network)}_"
+        f"{sanitize_filename_component(station)}_"
+        f"{sanitize_filename_component(channel)}.mseed"
+    )
+    return station_dir / fname
+
+
 def _download_worker(
     client_urls: list[str],
     network: str,
@@ -307,7 +342,7 @@ def _download_worker(
                 time.sleep(delay)
             try:
                 logger.info(f"Provo client FDSN: {candidate} (tentativo {attempt})")
-                client = Client(candidate, timeout=60)
+                client = _get_client(candidate, timeout=60)
                 st = client.get_waveforms(
                     network=network,
                     station=station,
@@ -335,8 +370,64 @@ def _download_worker(
                 # 4xx permanenti (non 413/429): nessun retry, client successivo
                 if any(code in msg for code in ("400", "401", "403", "404")):
                     break
+    # Nessun client ha risposto per questa finestra
     info["error"] = "Nessun client FDSN risponde"
     return info
+
+
+def _download_with_fragmentation(
+    client_urls, network, location, station, channel,
+    window_start, window_end, fpath, dry_run,
+):
+    """_download_worker + frammentazione automatica dell'oversize.
+
+    Se la finestra riceve 413 (troppi dati), la spezza a metà e riprova
+    ricorsivamente fino a MIN_FRAGMENT_SECONDS: il task non viene più
+    scartato silenziosamente ma scaricato a blocchi più piccoli.
+    I frammenti usano lo stesso schema di nomi del task builder, quindi il
+    resume li riconosce nelle esecuzioni successive.
+    """
+    info = _download_worker(
+        client_urls, network, location, station, channel,
+        window_start, window_end, fpath, dry_run,
+    )
+    if info.get("status") != "oversize":
+        return info
+
+    duration = window_end - window_start
+    if duration <= MIN_FRAGMENT_SECONDS:
+        # Già alla finestra minima: il 413 è un limite lato server, non
+        # risolvibile frammentando. Riportato senza silenzio.
+        return info
+
+    logger.info(
+        f"Oversize su {station}/{channel} ({duration/3600:.1f}h): "
+        f"frammento la finestra a metà e riprovo"
+    )
+    mid = window_start + duration / 2
+    left_path = _mseed_path_for_window(
+        fpath.parent, network, station, channel, window_start
+    )
+    right_path = _mseed_path_for_window(
+        fpath.parent, network, station, channel, mid
+    )
+    left = _download_with_fragmentation(
+        client_urls, network, location, station, channel,
+        window_start, mid, left_path, dry_run,
+    )
+    right = _download_with_fragmentation(
+        client_urls, network, location, station, channel,
+        mid, window_end, right_path, dry_run,
+    )
+    statuses = {left.get("status"), right.get("status")}
+    if statuses == {"success"}:
+        return {**info, "status": "success", "error": None,
+                "client": left.get("client"), "fragmented": True}
+    if statuses == {"oversize"}:
+        return {**info, "fragmented": True,
+                "error": "oversize persistente alla finestra minima"}
+    return {**info, "status": "failed", "fragmented": True,
+            "error": f"frammentazione con esiti misti: {sorted(statuses)}"}
 
 
 def download_waveforms() -> None:
@@ -404,7 +495,7 @@ def download_waveforms() -> None:
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
             executor.submit(
-                _download_worker,
+                _download_with_fragmentation,
                 client_urls,
                 args.network,
                 args.location,
