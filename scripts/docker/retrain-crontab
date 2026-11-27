@@ -1,0 +1,4 @@
+# Crontab del servizio di retraining automatico (container Docker).
+# Formato: min ora giorno mese giorno-settimana  utente  comando
+# Retraining mensile: giorno 1 alle 03:00 (orario del container, UTC di default)
+0 3 1 * * root cd /app && python -m mobile.retrain_models --force >> /app/logs/retraining_cron.log 2>&1

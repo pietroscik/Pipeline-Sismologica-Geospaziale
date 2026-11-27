@@ -17,5 +17,18 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Retraining automatico mensile (issue #7): cron interno esegue
+  # `python -m mobile.retrain_models --force` il giorno 1 alle 03:00.
+  # Il codice è montato come volume: modelli (mobile/models/), run
+  # (runs/retraining/) e log restano sull'host e sopravvivono al container.
+  retraining:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sismologia_retraining
+    volumes:
+      - .:/app
+    restart: unless-stopped
+
 volumes:
   postgis_data:
