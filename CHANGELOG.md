@@ -11,7 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Fixed
+- **Transformer: regolarizzazione esplicita dopo lo StandardScaler (PR #49)**.
+  Lo scaling causale ha rimosso la regolarizzazione implicita dello scaling
+  grezzo: su ~1.400 finestre di training la rete memorizzava il train set in
+  <10 epoche (run reale 2026-11-28: train loss 1.09->0.24 mentre val loss
+  1.66->5.67; Transformer scivolato a PR-AUC test 0.094, sotto il caso).
+  Interventi: learning rate default 1e-3 -> **2e-4**, **AdamW** con
+  weight_decay=1e-2, **dropout 0.3** su embedding e encoder layer. Il
+  checkpoint resta su MCC val (NON su -val_loss: il criterio loss aveva
+  selezionato i pesi dell'epoca 1 nel caso reale 2026-11-27, val loss
+  34.5->64.7 sotto pos_weight mentre la classificazione migliorava). Verifica
+  sintetica: divergenza val loss ridotta (0.93->1.09, era 1.66->5.67) e il
+  checkpoint MCC generalizza sul test (MCC 0.71)
+
 - **Scaling causale in `train_temporal_transformer`**: `StandardScaler`
   fittato SOLO sul sub-train (primi 85%, coda del 15% riservata alla
   validation; zero leakage). Senza scaling le feature a scala larghissima
