@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
+import numpy as np
 import pandas as pd
 from obspy import read
 from obspy.core import Stream
@@ -155,25 +156,33 @@ def iter_mseed_files(directory: Path) -> Iterable[Path]:
     yield from sorted(directory.rglob("*.mseed"))
 
 
-def process_file(path: Path, cfg: PickConfig) -> list[dict]:
-    """Elabora UN file MiniSEED e restituisce i trigger come dizionari.
+def process_file(path: Path, cfg: PickConfig) -> tuple[list[dict], list[dict]]:
+    """Elabora UN file MiniSEED: trigger STA/LTA e statistica energetica oraria.
+
+    Restituisce (trigger_rows, energy_rows):
+    - trigger_rows: un dict per ogni pick STA/LTA (come prima);
+    - energy_rows: un dict per ogni finestra oraria con RMS e picco di
+      ampiezza della traccia pre-processata (stessa banda di detection).
+      È l'informazione energetica REALE del segnale, assente nei soli
+      timestamp dei trigger (proxy delta_seconds degenere: banda
+      7.96-9.88 s, Moran 0.17, misurato 2026-11-28).
 
     Funzione pura (modulo la lettura): la parallelizzazione con ProcessPool
-    richiede che sia top-level e picklabile. La logica è quella del ciclo
-    sequenziale originale, estratta tale e quale.
+    richiede che sia top-level e picklabile. La logica dei trigger è quella
+    del ciclo sequenziale originale, estratta tale e quale.
     """
     try:
         event_id, network, station, channel = parse_filename(path)
     except ValueError as exc:
         logger.warning(str(exc))
-        return []
+        return [], []
 
     try:
         st_raw = read(str(path))
         st_raw.merge(fill_value="interpolate")
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"Impossibile leggere {path.name}: {exc}")
-        return []
+        return [], []
 
     tr = st_raw[0]
     sampling_rate_original = tr.stats.sampling_rate
@@ -186,6 +195,7 @@ def process_file(path: Path, cfg: PickConfig) -> list[dict]:
     step = window_length - overlap
 
     triggers = []
+    energy_rows = []
     for tr_window in tr.slide(
         window_length=window_length, step=step, include_partial_windows=True
     ):
@@ -196,11 +206,30 @@ def process_file(path: Path, cfg: PickConfig) -> list[dict]:
         is_last = tr_window.stats.endtime >= tr.stats.endtime
         valid_end = tr_window.stats.starttime.timestamp + step
 
+        # Statistica energetica oraria (RSAM-like) sulla stessa finestra
+        # pre-processata della detection: RMS e picco di ampiezza in counts.
+        # Deduplicazione dell'overlap identica ai trigger (zona di step).
+        if is_last or tr_window.stats.starttime.timestamp < valid_end - 1:
+            data = st_win[0].data.astype("float64")
+            if data.size:
+                energy_rows.append(
+                    dict(
+                        filename=str(path),
+                        network=network,
+                        station=station,
+                        channel=channel,
+                        window_epoch=tr_window.stats.starttime.timestamp,
+                        rms=float(np.sqrt(np.mean(data**2))),
+                        peak=float(np.max(np.abs(data))),
+                    )
+                )
+
+        # Ignoriamo i trigger nella zona di sovrapposizione (no duplicati)
         for ts in win_triggers:
             if is_last or ts < valid_end:
                 triggers.append(ts)
 
-    return [
+    trigger_rows = [
         dict(
             filename=str(path),
             network=network,
@@ -213,6 +242,7 @@ def process_file(path: Path, cfg: PickConfig) -> list[dict]:
         )
         for arrival_ts in triggers
     ]
+    return trigger_rows, energy_rows
 
 
 def main() -> None:
@@ -251,6 +281,14 @@ def main() -> None:
         help="Processi paralleli per l'elaborazione dei file "
              "(0 = auto: min(4, CPU disponibili)).",
     )
+    parser.add_argument(
+        "--energy-csv",
+        default=None,
+        type=Path,
+        help="CSV di output per la statistica energetica oraria per stazione "
+             "(RMS e picco di ampiezza). Default: station_energy_hourly.csv "
+             "accanto a --output-csv.",
+    )
     args = parser.parse_args()
 
     cfg = PickConfig(
@@ -265,6 +303,7 @@ def main() -> None:
     )
 
     rows = []
+    energy_rows = []
     all_files = list(iter_mseed_files(args.mseed_dir))
     total_files = len(all_files)
     logger.info(f"Trovati {total_files} file MiniSEED da elaborare.")
@@ -287,16 +326,45 @@ def main() -> None:
             futures = pool.map(
                 process_file, all_files, [cfg] * total_files, chunksize=4
             )
-            for i, file_rows in enumerate(futures, 1):
+            for i, file_result in enumerate(futures, 1):
                 if i % 25 == 0 or i == total_files:
                     logger.info(f"Elaborazione file {i}/{total_files}...")
+                file_rows, file_energy = file_result
                 rows.extend(file_rows)
+                energy_rows.extend(file_energy)
     else:
         logger.info("Elaborazione sequenziale (workers=1 o singolo file)...")
         for i, path in enumerate(all_files, 1):
             if i % 25 == 0 or i == total_files:
                 logger.info(f"Elaborazione file {i}/{total_files}...")
-            rows.extend(process_file(path, cfg))
+            file_rows, file_energy = process_file(path, cfg)
+            rows.extend(file_rows)
+            energy_rows.extend(file_energy)
+
+
+    # Salvataggio della statistica energetica oraria per stazione (sempre,
+    # anche se i trigger non formano cluster: l'energia e' informazione
+    # indipendente dalla detection STA/LTA).
+    energy_csv_path = args.energy_csv or (
+        args.output_csv.parent / "station_energy_hourly.csv"
+    )
+    energy_cols = [
+        "network", "station", "channel", "window_epoch", "window_iso",
+        "rms", "peak",
+    ]
+    if energy_rows:
+        df_energy = pd.DataFrame(energy_rows)
+        df_energy["window_iso"] = pd.to_datetime(
+            df_energy["window_epoch"], unit="s"
+        )
+        df_energy = df_energy.sort_values(["station", "window_epoch"])
+        energy_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        df_energy[energy_cols].to_csv(energy_csv_path, index=False)
+        logger.info(f"Salvato {energy_csv_path} ({len(df_energy)} righe di energia oraria per stazione).")
+    else:
+        energy_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(columns=energy_cols).to_csv(energy_csv_path, index=False)
+        logger.warning(f"Nessuna statistica energetica estratta. Creato CSV vuoto: {energy_csv_path}")
 
     if not rows:
         create_empty_csv(args.output_csv, "Nessun pick trovato. Controlla i parametri o le tracce.")

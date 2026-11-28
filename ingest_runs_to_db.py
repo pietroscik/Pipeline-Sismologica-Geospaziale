@@ -130,6 +130,19 @@ def initialize_db_schema(con: duckdb.DuckDBPyConnection):
             PRIMARY KEY (timestamp)
         );
 
+        CREATE TABLE IF NOT EXISTS waveform_energy_hourly (
+            -- Statistica energetica oraria per stazione (RSAM-like), output
+            -- di compute_mseed_deltas.py: RMS e picco di ampiezza della
+            -- traccia pre-processata (banda di detection). E' l'energia
+            -- REALE del segnale, assente nei soli conteggi di trigger.
+            station_code VARCHAR,
+            channel VARCHAR,
+            hour TIMESTAMP,
+            rms DOUBLE,
+            peak DOUBLE,
+            PRIMARY KEY (station_code, channel, hour)
+        );
+
         CREATE TABLE IF NOT EXISTS catalog_events (
             -- Catalogo eventi INGV (fdsnws/event): ground truth del
             -- Target_Allarme. Popolata da download_cf_events.py + ingest.
@@ -150,6 +163,11 @@ def initialize_db_schema(con: duckdb.DuckDBPyConnection):
     for _col_sql in (
         "ALTER TABLE ml_features_timeseries ADD COLUMN eventi_catalogo_6h DOUBLE",
         "ALTER TABLE ml_features_timeseries ADD COLUMN magnitudo_max_6h DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN rms_medio DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN rms_max DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN picco_max DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN rms_max_ultime_6h DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN rms_max_ultime_24h DOUBLE",
     ):
         try:
             con.execute(_col_sql)
@@ -236,6 +254,18 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             FROM catalog_events
             GROUP BY date_trunc('hour', time)
         ),
+        energy_hourly AS (
+            -- Statistica energetica oraria dalla tabella waveform_energy_hourly
+            -- (RMS/picco per stazione calcolati da compute_mseed_deltas.py).
+            -- Ore senza dati energetici restano a 0 per COALESCE.
+            SELECT
+                hour,
+                avg(rms) AS rms_medio,
+                max(rms) AS rms_max,
+                max(peak) AS picco_max
+            FROM waveform_energy_hourly
+            GROUP BY hour
+        ),
         hourly_aggregates AS (
             -- Griglia + conteggi: le ore mancanti diventano righe con
             -- numero_eventi=0 e is_data_complete=0
@@ -247,6 +277,9 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
                 COALESCE(c.energia_std, 0) AS energia_std,
                 ch.catalog_n AS catalog_n,
                 ch.catalog_max AS catalog_max,
+                COALESCE(en.rms_medio, 0) AS rms_medio,
+                COALESCE(en.rms_max, 0) AS rms_max,
+                COALESCE(en.picco_max, 0) AS picco_max,
                 CASE
                     WHEN e.stazioni_attese = 0 THEN 0
                     WHEN COALESCE(c.stazioni_attive, 0)::DOUBLE / e.stazioni_attese >= 0.95 THEN 1
@@ -256,6 +289,7 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             CROSS JOIN expected_stations e
             LEFT JOIN hourly_counts c ON c.hour = g.timestamp
             LEFT JOIN catalog_hourly ch ON ch.hour = g.timestamp
+            LEFT JOIN energy_hourly en ON en.hour = g.timestamp
         ),
         rolling_features AS (
             -- 2. Calcola le feature su finestre mobili. Le feature del
@@ -268,6 +302,8 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
                 sum(numero_eventi) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS eventi_ultime_6h,
                 max(energia_max) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS energia_max_ultime_6h,
                 avg(energia_media) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS energia_media_ultime_6h,
+                max(rms_max) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS rms_max_ultime_6h,
+                max(rms_max) OVER (ORDER BY timestamp ROWS BETWEEN 23 PRECEDING AND CURRENT ROW) AS rms_max_ultime_24h,
                 sum(numero_eventi) OVER (ORDER BY timestamp ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS eventi_ultime_12h,
                 max(energia_max) OVER (ORDER BY timestamp ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS energia_max_ultime_12h,
                 avg(energia_media) OVER (ORDER BY timestamp ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS energia_media_ultime_12h,
@@ -322,6 +358,11 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             -- Evita che uno 0 dovuto a telemetria assente sia confuso con
             -- assenza di attività sismica.
             is_data_complete,
+            rms_medio,
+            rms_max,
+            picco_max,
+            COALESCE(rms_max_ultime_6h, 0) as rms_max_ultime_6h,
+            COALESCE(rms_max_ultime_24h, 0) as rms_max_ultime_24h,
             eventi_catalogo_6h,
             magnitudo_max_6h,
             Target_Allarme
@@ -344,6 +385,11 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
         CASE WHEN extract('dow' from timestamp) IN (0, 6) THEN 1 ELSE 0 END AS is_weekend, -- DuckDB DOW: 0=Sun, 6=Sat
         bvalue_rolling_24h,
         CAST(NULL AS INTEGER) as is_data_complete, -- storico: completezza non tracciata
+        CAST(rms_medio AS DOUBLE) AS rms_medio, -- storico pre-energia: NULL
+        CAST(rms_max AS DOUBLE) AS rms_max,
+        CAST(picco_max AS DOUBLE) AS picco_max,
+        CAST(rms_max_ultime_6h AS DOUBLE) AS rms_max_ultime_6h,
+        CAST(rms_max_ultime_24h AS DOUBLE) AS rms_max_ultime_24h,
         CAST(eventi_catalogo_6h AS DOUBLE) AS eventi_catalogo_6h, -- storico pre-catalogo: NULL
         CAST(magnitudo_max_6h AS DOUBLE) AS magnitudo_max_6h,
         Target_Allarme
@@ -359,6 +405,7 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
         eventi_ultime_48h, energia_max_ultime_48h, energia_media_ultime_48h,
         ora_del_giorno, giorno_della_settimana, is_notte, is_weekend,
         bvalue_rolling_24h, is_data_complete,
+        rms_medio, rms_max, picco_max, rms_max_ultime_6h, rms_max_ultime_24h,
         eventi_catalogo_6h, magnitudo_max_6h, Target_Allarme
     FROM generated_features;
     """
@@ -417,6 +464,51 @@ def ingest_catalog_events(con: duckdb.DuckDBPyConnection, catalog_csv_path: Path
     con.unregister("df_catalog")
     logger.info(f"Inseriti/aggiornati {len(df)} eventi del catalogo in catalog_events.")
     return len(df)
+
+
+def ingest_waveform_energy(con: duckdb.DuckDBPyConnection, energy_csv_path: Path) -> int:
+    """Ingerisce la statistica energetica oraria per stazione in DuckDB.
+
+    Output di compute_mseed_deltas.py (CSV station_energy_hourly.csv): RMS e
+    picco di ampiezza per ogni finestra oraria pre-processata. L'ingest e'
+    idempotente sulla chiave (station_code, channel, hour).
+    """
+    if not energy_csv_path.exists():
+        logger.warning(
+            f"File energia oraria non trovato ({energy_csv_path}): le feature "
+            "energetiche della vista ML resteranno a 0. Ricalcolarlo con "
+            "scripts/compute_mseed_deltas.py."
+        )
+        return 0
+    df = pd.read_csv(energy_csv_path)
+    required = {"station", "window_iso", "rms", "peak"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"CSV energia {energy_csv_path} privo delle colonne {sorted(missing)}"
+        )
+    df["window_iso"] = pd.to_datetime(df["window_iso"], errors="coerce")
+    df = df.dropna(subset=["window_iso", "rms"])
+    if df.empty:
+        logger.warning(f"CSV energia {energy_csv_path} vuoto: nessuna riga da ingerire.")
+        return 0
+    df_insert = df[["station", "channel", "window_iso", "rms", "peak"]].rename(
+        columns={"station": "station_code", "window_iso": "hour"}
+    )
+    con.register("df_energy", df_insert)
+    con.execute(
+        """
+        INSERT INTO waveform_energy_hourly (station_code, channel, hour, rms, peak)
+        SELECT station_code, channel, hour, rms, peak
+        FROM df_energy
+        ON CONFLICT (station_code, channel, hour) DO UPDATE SET
+            rms = EXCLUDED.rms,
+            peak = EXCLUDED.peak;
+        """
+    )
+    con.unregister("df_energy")
+    logger.info(f"Inserite/aggiornate {len(df_insert)} righe di energia oraria in waveform_energy_hourly.")
+    return len(df_insert)
 
 
 def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str, notes: str = None, config_path: Path = None):
@@ -581,6 +673,9 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
     if not catalog_csv.exists():
         catalog_csv = run_dir / "catalog_events.csv"
     ingest_catalog_events(con, catalog_csv)
+
+    # Ingestione dell'energia oraria per stazione (feature RSAM-like)
+    ingest_waveform_energy(con, run_dir / "interim" / "station_energy_hourly.csv")
 
     # Dopo aver ingerito i dati, aggiorniamo la vista per il ML
     create_or_replace_ml_view(con)

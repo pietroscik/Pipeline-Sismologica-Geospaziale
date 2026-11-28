@@ -529,3 +529,101 @@ class TestCatalogTarget:
         )
         params = ingest.get_catalog_target_params()
         assert params == {"mag_threshold": 4.5, "horizon_hours": 3}
+
+
+class TestEnergyFeatures:
+    """Feature energetiche orarie (RMS/picco) dalla tabella
+    waveform_energy_hourly: l'energia REALE del segnale, assente nei soli
+    conteggi di trigger (proxy delta_seconds degenere sui dati reali)."""
+
+    def _make_energy_run(self, tmp_path, monkeypatch, with_energy=True):
+        """Run con delta orari + CSV energia: restituisce (run_dir, db_path)."""
+        db_path = tmp_path / "energy_test.duckdb"
+        monkeypatch.setattr(ingest, "DUCKDB_PATH", db_path)
+        run_dir = tmp_path / "run_energy"
+        (run_dir / "interim").mkdir(parents=True)
+
+        base = pd.Timestamp("2025-11-01")
+        rows = []
+        for h in range(24):
+            for st in ("CAAM", "CAWE"):
+                t = base + pd.Timedelta(hours=h)
+                rows.append({
+                    "event_id": f"e{h}{st}", "station": st, "network": "IV",
+                    "channel": "HHZ", "arrival_epoch": int(t.timestamp()),
+                    "arrival_iso": t, "event_reference_epoch": int(t.timestamp()),
+                    "delta_seconds": 9.0, "run_id": "run_energy",
+                })
+        pd.DataFrame(rows).to_csv(
+            run_dir / "interim" / "station_deltas_from_mseed.csv", index=False
+        )
+
+        if with_energy:
+            erows = []
+            for h in range(24):
+                for st in ("CAAM", "CAWE"):
+                    t = base + pd.Timedelta(hours=h)
+                    erows.append({
+                        "network": "IV", "station": st, "channel": "HHZ",
+                        "window_epoch": int(t.timestamp()), "window_iso": t,
+                        "rms": 10.0 + h, "peak": 100.0 + h,
+                    })
+            pd.DataFrame(erows).to_csv(
+                run_dir / "interim" / "station_energy_hourly.csv", index=False
+            )
+        return run_dir, db_path
+
+    def test_tabella_e_ingest_energia(self, tmp_path, monkeypatch):
+        run_dir, db_path = self._make_energy_run(tmp_path, monkeypatch)
+        ingest.ingest_run_data("run_energy", "run_energy", run_dir, "mseed")
+
+        df = read_table(db_path, "waveform_energy_hourly")
+        assert len(df) == 48  # 24 ore x 2 stazioni
+        assert set(df.columns) >= {"station_code", "channel", "hour", "rms", "peak"}
+        assert df.rms.sum() == pytest.approx(sum(10.0 + h for h in range(24)) * 2)
+
+    def test_ingest_energia_idempotente(self, tmp_path, monkeypatch):
+        run_dir, db_path = self._make_energy_run(tmp_path, monkeypatch)
+        ingest.ingest_run_data("run_energy", "run_energy", run_dir, "mseed")
+        ingest.ingest_run_data("run_energy", "run_energy", run_dir, "mseed")
+        df = read_table(db_path, "waveform_energy_hourly")
+        assert len(df) == 48  # nessun duplicato
+
+    def test_feature_energetiche_nella_vista(self, tmp_path, monkeypatch):
+        """rms_medio/rms_max/picco_max e i rolling energetici sono nella vista."""
+        run_dir, db_path = self._make_energy_run(tmp_path, monkeypatch)
+        ingest.ingest_run_data("run_energy", "run_energy", run_dir, "mseed")
+
+        con = duckdb.connect(str(db_path), read_only=True)
+        df = con.execute(
+            "SELECT timestamp, rms_medio, rms_max, picco_max, "
+            "rms_max_ultime_6h, rms_max_ultime_24h "
+            "FROM ml_features_ready_view ORDER BY timestamp"
+        ).df()
+        con.close()
+        assert not df.empty
+        # Il boundary del target esclude le ultime 6 ore (23-6=17): la
+        # vista mostra le ore 0-16, quindi rms max = 10+16 = 26
+        assert df.rms_medio.max() == pytest.approx(26.0)
+        # Il rolling 6h porta il max delle 6 ore precedenti (no futuro)
+        assert df.rms_max_ultime_6h.max() == pytest.approx(26.0)
+
+    def test_energia_assente_feature_a_zero(self, tmp_path, monkeypatch):
+        """Senza CSV energia la vista resta valida con feature a 0."""
+        run_dir, db_path = self._make_energy_run(
+            tmp_path, monkeypatch, with_energy=False)
+        ingest.ingest_run_data("run_energy", "run_energy", run_dir, "mseed")
+
+        con = duckdb.connect(str(db_path), read_only=True)
+        tot, s_rms = con.execute(
+            "SELECT count(*), sum(rms_medio) FROM ml_features_ready_view"
+        ).fetchone()
+        con.close()
+        assert tot > 0 and s_rms == 0
+
+    def test_csv_energia_malformato_rifiutato(self, tmp_path, monkeypatch):
+        run_dir, db_path = self._make_energy_run(tmp_path, monkeypatch)
+        pd.DataFrame({"colonna_sbagliata": [1]}).to_csv(
+            run_dir / "interim" / "station_energy_hourly.csv", index=False)
+        with pytest.raises(ValueError, match="privo delle colonne"):
+            ingest.ingest_run_data("run_energy", "run_energy", run_dir, "mseed")

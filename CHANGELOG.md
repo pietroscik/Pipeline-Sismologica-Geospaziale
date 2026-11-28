@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Feature energetiche dal MiniSEED (RSAM-like)**: `compute_mseed_deltas`
+  estrae ora, per ogni finestra oraria e stazione, RMS e picco di ampiezza
+  della traccia pre-processata (stessa banda di detection). L'energia REALE
+  del segnale era assente nei soli conteggi di trigger (proxy delta_seconds
+  degenere: banda 7.96-9.88 s, Moran 0.17). Output in
+  `interim/station_energy_hourly.csv` (flag `--energy-csv`), parallelizzato
+  con `--workers` come i trigger. Dopo questa estrazione i MiniSEED raw
+  diventano ridondanti per la pipeline
+- Nuova tabella DuckDB `waveform_energy_hourly` (PK stazione+canale+ora,
+  ingest idempotente) con funzione `ingest_waveform_energy()`
+- 5 feature nella vista ML: `rms_medio`, `rms_max`, `picco_max` (istantanee
+  orarie, aggregate sulla rete) e `rms_max_ultime_6h`, `rms_max_ultime_24h`
+  (finestre PASSATE, no data leakage). Storico retrocompatibile: colonne
+  ALTER aggiunte, NULL per le run pre-energia
+
 - `compute_mseed_deltas`: elaborazione parallela per file con
   `ProcessPoolExecutor` e nuovo flag `--workers` (0 = auto: min(4, CPU));
   l'elaborazione era single-thread (run reale 2026-11-28 su Colab: 2,6 GB
