@@ -12,6 +12,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `compute_mseed_deltas`: elaborazione parallela per file con
+  `ProcessPoolExecutor` e nuovo flag `--workers` (0 = auto: min(4, CPU));
+  l'elaborazione era single-thread (run reale 2026-11-28 su Colab: 2,6 GB
+  di RAM usati su 51 disponibili e timeout della Fase 2 superato su 2.400
+  file)
+- `run_pipeline`: flag `--mseed-workers` per inoltrare i processi paralleli
+  alla Fase 2
+
+### Fixed
+- `run_pipeline`: timeout della Fase 2 proporzionale al volume dei
+  MiniSEED (`max(timeout*2, 5s/file)`) invece del fisso `timeout*2` (600s,
+  superato dopo 10 minuti sulla run reale a 3 mesi)
+- `run_pipeline`: con `--auto-ingest` l'ingest viene ANTICIPATA SEMPRE prima
+  del training, non solo a DB assente. Un DB stantio su Drive (run
+  precedente) lasciava al training una vista ML obsoleta (caso reale
+  2026-11-28: 144 ore vecchie vs 618 nuove, target tutto a 0)
+- `train_risk_model`: selezione del best model ora deterministica e basata su
+  average precision sul test (tie-break: MCC, poi transformer >
+  random_forest > xgboost). Il vecchio criterio `test_f1_score` con `>`
+  stretto, con pareggi a 0.0, selezionava sempre il primo modello addestrato
+  (XGBoost, il peggiore: ROC-AUC 0.089 inverso)
+
+### Added
 - **Target da catalogo eventi INGV (ground truth)**: `Target_Allarme = 1` se
   nelle prossime `horizon_hours` il catalogo contiene almeno un evento con
   `magnitude >= mag_threshold` entro 25 km. Tarato sul catalogo reale dei
