@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`scripts/tune_transformer.py`: ottimizzazione bayesiana (Optuna/TPE) degli
+  iperparametri del Transformer** — lookback (6/8/12/24/48 ore, prima un
+  default euristico mai tarato), learning rate (log-uniform 1e-5..1e-3),
+  dropout (0.1..0.5), d_model (16/32/64), weight_decay (log-uniform
+  1e-4..1e-1). L'objective e' il MCC sul validation interno (mai il test set:
+  il test si valuta UNA sola volta con la configurazione vincitrice, comando
+  `train_risk_model` pronto stampato a fine studio). CSV dei trial in
+  `runs/tuning/optuna_trials.csv`. Dipendenza `optuna` aggiunta
+- `train_temporal_transformer`: parametri `dropout`, `d_model`, `weight_decay`
+  esposti nella firma (default invariati: 0.3/32/1e-2), documentati nei
+  metadati del bundle
 ### Fixed
 - **Transformer: regolarizzazione esplicita dopo lo StandardScaler (PR #49)**.
   Lo scaling causale ha rimosso la regolarizzazione implicita dello scaling

@@ -55,6 +55,7 @@ dependencies = [
     "torch_geometric",
     "imblearn",
     "mlflow>=2.0.0",
+    "optuna",
     
     # Cloud & API & Database (Aggiunte mancanti per moduli mobile/api)
     "boto3>=1.26.0",

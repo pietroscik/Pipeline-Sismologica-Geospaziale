@@ -968,6 +968,9 @@ def train_temporal_transformer(
     epochs: int = 50,
     learning_rate: float = 0.001,
     sequence_length: int = 10,
+    dropout: float = 0.3,
+    d_model: int = 32,
+    weight_decay: float = 1e-2,
 ) -> Tuple[Any, Dict]:
     """
 
@@ -1057,7 +1060,7 @@ def train_temporal_transformer(
     import torch.optim as optim
 
     # Istanziazione del modello con il corretto numero di feature
-    model = SeismicTransformer(num_features=X_train.shape[1])
+    model = SeismicTransformer(num_features=X_train.shape[1], d_model=d_model, dropout=dropout)
     logger.info("✅ DataLoader creati. Inizio addestramento Transformer...")
     if use_val:
         logger.info(
@@ -1073,7 +1076,7 @@ def train_temporal_transformer(
     # regolarizzazione implicita dello scaling grezzo e' sparita e serve
     # quella esplicita (run reale 2026-11-28: overfitting con train loss
     # 0.24 e val loss 5.67 alla decima epoca).
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-2)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     # Scheduler legato alla loss di validazione (o train come fallback)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -1220,6 +1223,9 @@ def train_temporal_transformer(
             "epochs": epochs,
             "learning_rate": learning_rate,
             "sequence_length": sequence_length,
+            "dropout": dropout,
+            "d_model": d_model,
+            "weight_decay": weight_decay,
             # Soglia MCC appresa sul validation: da salvare nei metadati del
             # modello e riusare in inferenza (scripts/predict_live.py)
             "best_threshold": best_thr,
