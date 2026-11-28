@@ -127,8 +127,9 @@ class TestProcessFileParallel:
 
     def test_process_file_trova_trigger(self, synthetic_mseed):
         cfg = PickConfig()
-        rows = process_file(synthetic_mseed[0], cfg)
+        rows, energy = process_file(synthetic_mseed[0], cfg)
         assert rows, "Il transiente sintetico deve generare almeno un trigger"
+        assert energy, "La statistica energetica oraria non deve essere vuota"
         row = rows[0]
         assert row["station"] == "ST00"
         assert row["network"] == "IV"
@@ -139,22 +140,36 @@ class TestProcessFileParallel:
         from concurrent.futures import ProcessPoolExecutor
 
         cfg = PickConfig()
-        seq = [r for p in synthetic_mseed for r in process_file(p, cfg)]
+        seq, seq_energy = [], []
+        for p in synthetic_mseed:
+            p_rows, p_energy = process_file(p, cfg)
+            seq.extend(p_rows)
+            seq_energy.extend(p_energy)
         with ProcessPoolExecutor(max_workers=2) as pool:
-            par = [
-                r
-                for file_rows in pool.map(
-                    process_file, synthetic_mseed, [cfg] * len(synthetic_mseed)
-                )
-                for r in file_rows
-            ]
+            results = list(pool.map(
+                process_file, synthetic_mseed, [cfg] * len(synthetic_mseed)
+            ))
+        par = [r for rows, _e in results for r in rows]
+        par_energy = [e for _r, es in results for e in es]
         key = lambda r: (r["filename"], r["arrival_epoch"])  # noqa: E731
         assert sorted(seq, key=key) == sorted(par, key=key)
+        ekey = lambda e: (e["filename"], e["window_epoch"])  # noqa: E731
+        assert sorted(seq_energy, key=ekey) == sorted(par_energy, key=ekey)
+
+    def test_process_file_energia_rms_e_picco(self, synthetic_mseed):
+        """RMS e picco catturano il transiente sintetico (5000 counts)."""
+        cfg = PickConfig()
+        _rows, energy = process_file(synthetic_mseed[0], cfg)
+        assert energy, "Il CSV energetico deve avere una riga per finestra oraria"
+        e = energy[0]
+        assert set(e) >= {"station", "channel", "window_epoch", "rms", "peak"}
+        assert e["rms"] > 0.0
+        assert e["peak"] > 1000.0, "Il picco deve riflettere il transiente (5000 counts)"
 
     def test_file_ileggibile_restituisce_lista_vuota(self, tmp_path):
         bad = tmp_path / "ev9_IV_ST09_HHZ.mseed"
         bad.write_bytes(b"not a mseed")
-        assert process_file(bad, PickConfig()) == []
+        assert process_file(bad, PickConfig()) == ([], [])
 
 
 class TestCliFlags:
