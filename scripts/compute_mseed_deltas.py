@@ -9,6 +9,7 @@ Esempio d'uso (PowerShell):
 from __future__ import annotations
 
 import argparse
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -154,6 +155,66 @@ def iter_mseed_files(directory: Path) -> Iterable[Path]:
     yield from sorted(directory.rglob("*.mseed"))
 
 
+def process_file(path: Path, cfg: PickConfig) -> list[dict]:
+    """Elabora UN file MiniSEED e restituisce i trigger come dizionari.
+
+    Funzione pura (modulo la lettura): la parallelizzazione con ProcessPool
+    richiede che sia top-level e picklabile. La logica è quella del ciclo
+    sequenziale originale, estratta tale e quale.
+    """
+    try:
+        event_id, network, station, channel = parse_filename(path)
+    except ValueError as exc:
+        logger.warning(str(exc))
+        return []
+
+    try:
+        st_raw = read(str(path))
+        st_raw.merge(fill_value="interpolate")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Impossibile leggere {path.name}: {exc}")
+        return []
+
+    tr = st_raw[0]
+    sampling_rate_original = tr.stats.sampling_rate
+    start_epoch = tr.stats.starttime.timestamp
+    end_epoch = tr.stats.endtime.timestamp
+
+    # Chunking: finestre da 1 ora con overlap (calcoli su array piccoli)
+    window_length = 3600.0
+    overlap = max(60.0, cfg.lta_seconds * 3)
+    step = window_length - overlap
+
+    triggers = []
+    for tr_window in tr.slide(
+        window_length=window_length, step=step, include_partial_windows=True
+    ):
+        st_win = Stream(traces=[tr_window.copy()])
+        st_win = preprocess(st_win, cfg)
+        win_triggers = get_all_triggers(st_win, cfg)
+
+        is_last = tr_window.stats.endtime >= tr.stats.endtime
+        valid_end = tr_window.stats.starttime.timestamp + step
+
+        for ts in win_triggers:
+            if is_last or ts < valid_end:
+                triggers.append(ts)
+
+    return [
+        dict(
+            filename=str(path),
+            network=network,
+            station=station,
+            channel=channel,
+            start_epoch=start_epoch,
+            end_epoch=end_epoch,
+            sampling_rate=sampling_rate_original,
+            arrival_epoch=arrival_ts,
+        )
+        for arrival_ts in triggers
+    ]
+
+
 def main() -> None:
     project_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(
@@ -183,6 +244,13 @@ def main() -> None:
         default=10.0,
         help="Finestra in secondi per raggruppare i trigger.",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Processi paralleli per l'elaborazione dei file "
+             "(0 = auto: min(4, CPU disponibili)).",
+    )
     args = parser.parse_args()
 
     cfg = PickConfig(
@@ -205,66 +273,30 @@ def main() -> None:
         create_empty_csv(args.output_csv, "Nessun file mseed trovato nella directory.")
         return
 
-    for i, path in enumerate(all_files, 1):
-        if i % 10 == 0 or i == total_files:
-            logger.info(f"Elaborazione file {i}/{total_files}...")
-        try:
-            event_id, network, station, channel = parse_filename(path)
-        except ValueError as exc:
-            logger.warning(str(exc))
-            continue
+    # Elaborazione parallela per file (run reale 2026-11-28: 2.400 file su
+    # Colab con 51GB di RAM liberi e una sola CPU impegnata -> 25+ minuti
+    # sequenziali e timeout della Fase 2 superato). L'elaborazione per file
+    # è indipendente: ProcessPoolExecutor con --workers processi.
+    workers = args.workers or min(4, os.cpu_count() or 1)
+    if workers > 1 and total_files > 1:
+        logger.info(f"Elaborazione parallela con {workers} processi...")
+        from concurrent.futures import ProcessPoolExecutor
 
-        try:
-            # Leggiamo il file e uniamo eventuali gap.
-            # Questo alloca la memoria base, ma le operazioni matematiche
-            # verranno fatte a piccoli blocchi per evitare saturazione RAM.
-            st_raw = read(str(path))
-            st_raw.merge(fill_value="interpolate")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"Impossibile leggere {path.name}: {exc}")
-            continue
-
-        tr = st_raw[0]
-        sampling_rate_original = tr.stats.sampling_rate
-        start_epoch = tr.stats.starttime.timestamp
-        end_epoch = tr.stats.endtime.timestamp
-
-        # Chunking: Finestre da 1 ora (3600s) con 60s di overlap
-        # Isoliamo i calcoli pesanti su array minuscoli
-        window_length = 3600.0
-        overlap = max(60.0, cfg.lta_seconds * 3)
-        step = window_length - overlap
-
-        triggers = []
-        # Scivoliamo lungo il tracciato continuo
-        for tr_window in tr.slide(
-            window_length=window_length, step=step, include_partial_windows=True
-        ):
-            st_win = Stream(traces=[tr_window.copy()])
-            st_win = preprocess(st_win, cfg)
-            win_triggers = get_all_triggers(st_win, cfg)
-
-            is_last = tr_window.stats.endtime >= tr.stats.endtime
-            valid_end = tr_window.stats.starttime.timestamp + step
-
-            # Ignoriamo i trigger nella zona di sovrapposizione per non avere duplicati
-            for ts in win_triggers:
-                if is_last or ts < valid_end:
-                    triggers.append(ts)
-
-        for arrival_ts in triggers:
-            rows.append(
-                dict(
-                    filename=str(path),
-                    network=network,
-                    station=station,
-                    channel=channel,
-                    start_epoch=start_epoch,
-                    end_epoch=end_epoch,
-                    sampling_rate=sampling_rate_original,
-                    arrival_epoch=arrival_ts,
-                )
+        # chunksize ampio: il costo per task domina il costo di pickling
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = pool.map(
+                process_file, all_files, [cfg] * total_files, chunksize=4
             )
+            for i, file_rows in enumerate(futures, 1):
+                if i % 25 == 0 or i == total_files:
+                    logger.info(f"Elaborazione file {i}/{total_files}...")
+                rows.extend(file_rows)
+    else:
+        logger.info("Elaborazione sequenziale (workers=1 o singolo file)...")
+        for i, path in enumerate(all_files, 1):
+            if i % 25 == 0 or i == total_files:
+                logger.info(f"Elaborazione file {i}/{total_files}...")
+            rows.extend(process_file(path, cfg))
 
     if not rows:
         create_empty_csv(args.output_csv, "Nessun pick trovato. Controlla i parametri o le tracce.")

@@ -493,6 +493,12 @@ Esempi di uso:
     )
 
     parser.add_argument(
+        "--mseed-workers", type=int,
+        help="Processi paralleli per l'elaborazione STA/LTA dei MiniSEED "
+             "(Fase 2; default: auto min(4, CPU))."
+    )
+
+    parser.add_argument(
         "--download-events", action="store_true",
         help="Scarica anche il catalogo eventi INGV per la finestra indicata "
              "(ground truth del Target_Allarme, salvato in interim/catalog_events.csv)."
@@ -787,6 +793,11 @@ Esempi di uso:
                 if not waveforms_dir.exists() or not any(waveforms_dir.iterdir()):
                     raise FileNotFoundError(f"La cartella dei MiniSEED non esiste o è vuota: {waveforms_dir}")
 
+                # Timeout proporzionale al volume: l'elaborazione STA/LTA
+                # costa ~0.5-1s per file (run reale 2026-11-28: 2.400 file
+                # -> timeout*2 insufficiente). Budget: max(timeout*2, 5s/file)
+                n_mseed = len(list(waveforms_dir.rglob("*.mseed")))
+                mseed_timeout = max(args.timeout * 2, n_mseed * 5)
                 cmd_compute_mseed = [
                     python_exe,
                     scripts_dir / "compute_mseed_deltas.py",
@@ -795,7 +806,9 @@ Esempi di uso:
                     "--output-csv",
                     str(out_station_deltas),
                 ]
-                run_cmd(cmd_compute_mseed, timeout=args.timeout * 2)
+                if args.mseed_workers:
+                    cmd_compute_mseed.extend(["--workers", str(args.mseed_workers)])
+                run_cmd(cmd_compute_mseed, timeout=mseed_timeout)
 
                 # Avvisa l'utente se un delta-csv è stato ignorato
                 if args.delta_csv:
@@ -810,6 +823,9 @@ Esempi di uso:
                 created_files.append(out_station_deltas)
 
                 waveforms_dir = run_dir / "waveforms"
+                # Timeout proporzionale al volume (vedi ramo --run-download)
+                n_mseed = len(list(waveforms_dir.rglob("*.mseed")))
+                mseed_timeout = max(args.timeout * 2, n_mseed * 5)
                 cmd_compute_mseed = [
                     python_exe,
                     scripts_dir / "compute_mseed_deltas.py",
@@ -818,7 +834,9 @@ Esempi di uso:
                     "--output-csv",
                     str(out_station_deltas),
                 ]
-                run_cmd(cmd_compute_mseed, timeout=args.timeout * 2)
+                if args.mseed_workers:
+                    cmd_compute_mseed.extend(["--workers", str(args.mseed_workers)])
+                run_cmd(cmd_compute_mseed, timeout=mseed_timeout)
 
                 # Avvisa l'utente se un delta-csv è stato ignorato
                 if args.delta_csv:
@@ -1039,15 +1057,15 @@ Esempi di uso:
         if args.mobile_analysis and args.start_phase <= 4:
 
             # Il training legge la vista ml_features_ready_view dal DuckDB:
-            # su un database ancora inesistente (runtime nuovo) fallirebbe.
-            # Con --auto-ingest attivo si anticipa l'ingest (idempotente,
-            # quella di fine pipeline la ripete senza duplicati).
-            duckdb_path = PROJECT_ROOT / "data" / "db" / "seismic_output.duckdb"
-            if args.auto_ingest and not duckdb_path.exists():
-                logger.warning(
-                    "DuckDB assente: ingest anticipata per rendere la vista ML "
-                    "disponibile al training (verrà ripetuta a fine pipeline, "
-                    "è idempotente)."
+            # deve contenere i dati DELLA RUN CORRENTE. Un DB assente (runtime
+            # nuovo) MA ANCHE uno stantio (run precedente senza i dati nuovi:
+            # caso reale 2026-11-28, 144 ore vecchie vs 618 nuove) rendono il
+            # training fallace. Con --auto-ingest l'ingest viene sempre
+            # anticipata: è idempotente e quella di fine pipeline la ripete.
+            if args.auto_ingest:
+                logger.info(
+                    "Ingest anticipata per rendere la vista ML aggiornata al "
+                    "training (idempotente, ripetuta a fine pipeline)."
                 )
                 pre_source = (
                     "mseed" if args.run_download or (run_dir / "waveforms").exists()

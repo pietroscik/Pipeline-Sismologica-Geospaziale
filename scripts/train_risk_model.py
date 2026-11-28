@@ -1199,6 +1199,42 @@ def train_temporal_transformer(
     return model, results
 
 
+def select_best_model(candidates):
+    """Seleziona il best model dai candidati addestrati.
+
+    Criterio PRIMARIO: average precision sul test (con classi sbilanciate e'
+    piu' informativa dell'F1, che collassa a 0.0 quando nessun modello
+    individua i positivi). TIE-BREAK: MCC sul test, poi priorita' fissa
+    transformer > random_forest > xgboost (deterministico: prima il criterio
+    era test_f1_score con '>' stretto, quindi con pareggi a 0.0 vinceva
+    sempre il primo modello addestrato, cioe' XGBoost — nel caso reale
+    2026-11-28 il peggiore, con ROC-AUC 0.089 inverso).
+
+    Args:
+        candidates: lista di tuple (nome, modello, metriche_test)
+
+    Returns:
+        Tuple (nome, modello) del best model. Con lista vuota restituisce
+        ("", None).
+    """
+    if not candidates:
+        return "", None
+
+    model_priority = {name: i for i, name in enumerate(
+        ["transformer", "random_forest", "xgboost"]
+    )}
+
+    def _selection_key(candidate):
+        name, _, res = candidate
+        pr_auc = float(res.get("test_average_precision", 0.0) or 0.0)
+        mcc = res.get("test_mcc", 0.0)
+        mcc = 0.0 if mcc is None or np.isnan(mcc) else float(mcc)
+        return (-pr_auc, -mcc, model_priority.get(name, len(model_priority)))
+
+    name, model, _ = min(candidates, key=_selection_key)
+    return name, model
+
+
 def calculate_metrics(y_true: pd.Series, y_pred: np.ndarray, prefix: str = "", threshold: float = 0.5) -> Dict:
     """
 
@@ -1658,29 +1694,20 @@ def main():
         X_test, y_test = prepare_features(df_test)
 
         results_dict = {}
-        best_model = None
-        best_model_name = ""
-        best_f1 = -1.0
+        # Candidati per la selezione del best model: (nome, modello, metriche).
+        candidates = []
 
         if args.model_type in ["xgboost", "compare"]:
             model_xgb, res_xgb = train_xgboost(X_train, y_train, X_test, y_test)
             if model_xgb:
                 results_dict["xgboost"] = res_xgb
-                f1 = res_xgb.get("test_f1_score", 0)
-                if f1 > best_f1:
-                    best_f1 = f1
-                    best_model = model_xgb
-                    best_model_name = "xgboost"
+                candidates.append(("xgboost", model_xgb, res_xgb))
 
         if args.model_type in ["random_forest", "compare"]:
             model_rf, res_rf = train_random_forest(X_train, y_train, X_test, y_test)
             if model_rf:
                 results_dict["random_forest"] = res_rf
-                f1 = res_rf.get("test_f1_score", 0)
-                if f1 > best_f1:
-                    best_f1 = f1
-                    best_model = model_rf
-                    best_model_name = "random_forest"
+                candidates.append(("random_forest", model_rf, res_rf))
 
         if args.model_type in ["transformer", "compare"]:
             model_tf, res_tf = train_temporal_transformer(
@@ -1694,11 +1721,22 @@ def main():
             )
             if model_tf:
                 results_dict["transformer"] = res_tf
-                f1 = res_tf.get("test_f1_score", 0)
-                if f1 > best_f1:
-                    best_f1 = f1
-                    best_model = model_tf
-                    best_model_name = "transformer"
+                candidates.append(("transformer", model_tf, res_tf))
+
+        best_model = None
+        best_model_name = ""
+        if candidates:
+            best_model_name, best_model = select_best_model(candidates)
+            sel = results_dict[best_model_name]
+            sel_pr = float(sel.get("test_average_precision", 0.0) or 0.0)
+            sel_mcc = sel.get("test_mcc", 0.0)
+            sel_mcc = 0.0 if sel_mcc is None or np.isnan(sel_mcc) else float(sel_mcc)
+            logger.info(
+                "🥇 Best model selezionato: %s (PR-AUC test: %.4f, MCC test: %.4f)",
+                best_model_name,
+                sel_pr,
+                sel_mcc,
+            )
 
         if results_dict:
             df_comparison = compare_models_performance(results_dict)
