@@ -168,6 +168,14 @@ def initialize_db_schema(con: duckdb.DuckDBPyConnection):
         "ALTER TABLE ml_features_timeseries ADD COLUMN picco_max DOUBLE",
         "ALTER TABLE ml_features_timeseries ADD COLUMN rms_max_ultime_6h DOUBLE",
         "ALTER TABLE ml_features_timeseries ADD COLUMN rms_max_ultime_24h DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN net_rms_log_ratio_med DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN net_peak_log_ratio_med DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN n_stations_energy DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN frac_stations_2x_rms DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN net_rms_log_ratio_6h DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN net_rms_log_ratio_max_24h DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN frac_stations_2x_6h DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN frac_stations_2x_max_24h DOUBLE",
     ):
         try:
             con.execute(_col_sql)
@@ -197,6 +205,64 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
     pronta per essere usata dal modello.
     """
     logger.info("Aggiornamento della vista 'ml_features_ready_view' per unire dati nuovi e storici...")
+
+    # Vista energetica ROBUSTA e CAUSALE: normalizza RMS e picco di ogni
+    # stazione per la mediana delle 168 ore PRECEDENTI (1 settimana causale,
+    # ROWS ... 1 PRECEDING: mai il presente). Rimuove gli effetti di scala
+    # non stazionari (gain strumento, rumore di fondo a lunga correlazione)
+    # e quelli meteo/antropici periodici che rendevano rms_medio/rms_max non
+    # confrontabili tra ore diverse. Il log-rapporto >= 0.301 (10^0.3 ~ 2x)
+    # marca le stazioni con energia raddoppiata rispetto alla base settimanale.
+    robust_energy_sql = """
+    CREATE OR REPLACE VIEW waveform_energy_robust_hourly AS
+    WITH hourly_station AS (
+        SELECT
+            DATE_TRUNC('hour', hour) AS hour_ts,
+            station_code,
+            AVG(rms) AS rms,
+            MAX(peak) AS peak
+        FROM waveform_energy_hourly
+        WHERE rms > 0 AND peak > 0
+        GROUP BY 1, 2
+    ),
+    causal_norm AS (
+        SELECT
+            hour_ts,
+            station_code,
+            rms,
+            peak,
+            MEDIAN(rms) OVER (
+                PARTITION BY station_code
+                ORDER BY hour_ts
+                ROWS BETWEEN 168 PRECEDING AND 1 PRECEDING
+            ) AS base_rms_7d,
+            MEDIAN(peak) OVER (
+                PARTITION BY station_code
+                ORDER BY hour_ts
+                ROWS BETWEEN 168 PRECEDING AND 1 PRECEDING
+            ) AS base_peak_7d
+        FROM hourly_station
+    ),
+    ratios AS (
+        SELECT
+            hour_ts,
+            station_code,
+            LOG10(rms / GREATEST(base_rms_7d, 1e-9)) AS rms_log_ratio,
+            LOG10(peak / GREATEST(base_peak_7d, 1e-9)) AS peak_log_ratio
+        FROM causal_norm
+        WHERE base_rms_7d IS NOT NULL
+    )
+    SELECT
+        hour_ts,
+        COUNT(DISTINCT station_code) AS n_stations_energy,
+        MEDIAN(rms_log_ratio) AS net_rms_log_ratio_med,
+        MEDIAN(peak_log_ratio) AS net_peak_log_ratio_med,
+        SUM(CASE WHEN rms_log_ratio >= 0.301 THEN 1 ELSE 0 END) AS n_stations_2x_rms,
+        AVG(CASE WHEN rms_log_ratio >= 0.301 THEN 1.0 ELSE 0.0 END) AS frac_stations_2x_rms
+    FROM ratios
+    GROUP BY hour_ts;
+    """
+    con.execute(robust_energy_sql)
 
     target_params = get_catalog_target_params()
     mag_threshold = target_params["mag_threshold"]
@@ -254,18 +320,6 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             FROM catalog_events
             GROUP BY date_trunc('hour', time)
         ),
-        energy_hourly AS (
-            -- Statistica energetica oraria dalla tabella waveform_energy_hourly
-            -- (RMS/picco per stazione calcolati da compute_mseed_deltas.py).
-            -- Ore senza dati energetici restano a 0 per COALESCE.
-            SELECT
-                hour,
-                avg(rms) AS rms_medio,
-                max(rms) AS rms_max,
-                max(peak) AS picco_max
-            FROM waveform_energy_hourly
-            GROUP BY hour
-        ),
         hourly_aggregates AS (
             -- Griglia + conteggi: le ore mancanti diventano righe con
             -- numero_eventi=0 e is_data_complete=0
@@ -277,9 +331,10 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
                 COALESCE(c.energia_std, 0) AS energia_std,
                 ch.catalog_n AS catalog_n,
                 ch.catalog_max AS catalog_max,
-                COALESCE(en.rms_medio, 0) AS rms_medio,
-                COALESCE(en.rms_max, 0) AS rms_max,
-                COALESCE(en.picco_max, 0) AS picco_max,
+                COALESCE(r.net_rms_log_ratio_med, 0) AS net_rms_log_ratio_med,
+                COALESCE(r.net_peak_log_ratio_med, 0) AS net_peak_log_ratio_med,
+                COALESCE(r.n_stations_energy, 0) AS n_stations_energy,
+                COALESCE(r.frac_stations_2x_rms, 0) AS frac_stations_2x_rms,
                 CASE
                     WHEN e.stazioni_attese = 0 THEN 0
                     WHEN COALESCE(c.stazioni_attive, 0)::DOUBLE / e.stazioni_attese >= 0.95 THEN 1
@@ -289,7 +344,7 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             CROSS JOIN expected_stations e
             LEFT JOIN hourly_counts c ON c.hour = g.timestamp
             LEFT JOIN catalog_hourly ch ON ch.hour = g.timestamp
-            LEFT JOIN energy_hourly en ON en.hour = g.timestamp
+            LEFT JOIN waveform_energy_robust_hourly r ON r.hour_ts = g.timestamp
         ),
         rolling_features AS (
             -- 2. Calcola le feature su finestre mobili. Le feature del
@@ -302,8 +357,10 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
                 sum(numero_eventi) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS eventi_ultime_6h,
                 max(energia_max) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS energia_max_ultime_6h,
                 avg(energia_media) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS energia_media_ultime_6h,
-                max(rms_max) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS rms_max_ultime_6h,
-                max(rms_max) OVER (ORDER BY timestamp ROWS BETWEEN 23 PRECEDING AND CURRENT ROW) AS rms_max_ultime_24h,
+                avg(net_rms_log_ratio_med) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS net_rms_log_ratio_6h,
+                max(net_rms_log_ratio_med) OVER (ORDER BY timestamp ROWS BETWEEN 23 PRECEDING AND CURRENT ROW) AS net_rms_log_ratio_max_24h,
+                avg(frac_stations_2x_rms) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS frac_stations_2x_6h,
+                max(frac_stations_2x_rms) OVER (ORDER BY timestamp ROWS BETWEEN 23 PRECEDING AND CURRENT ROW) AS frac_stations_2x_max_24h,
                 sum(numero_eventi) OVER (ORDER BY timestamp ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS eventi_ultime_12h,
                 max(energia_max) OVER (ORDER BY timestamp ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS energia_max_ultime_12h,
                 avg(energia_media) OVER (ORDER BY timestamp ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS energia_media_ultime_12h,
@@ -358,11 +415,14 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             -- Evita che uno 0 dovuto a telemetria assente sia confuso con
             -- assenza di attività sismica.
             is_data_complete,
-            rms_medio,
-            rms_max,
-            picco_max,
-            COALESCE(rms_max_ultime_6h, 0) as rms_max_ultime_6h,
-            COALESCE(rms_max_ultime_24h, 0) as rms_max_ultime_24h,
+            net_rms_log_ratio_med,
+            net_peak_log_ratio_med,
+            n_stations_energy,
+            frac_stations_2x_rms,
+            COALESCE(net_rms_log_ratio_6h, 0) as net_rms_log_ratio_6h,
+            COALESCE(net_rms_log_ratio_max_24h, 0) as net_rms_log_ratio_max_24h,
+            COALESCE(frac_stations_2x_6h, 0) as frac_stations_2x_6h,
+            COALESCE(frac_stations_2x_max_24h, 0) as frac_stations_2x_max_24h,
             eventi_catalogo_6h,
             magnitudo_max_6h,
             Target_Allarme
@@ -385,11 +445,14 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
         CASE WHEN extract('dow' from timestamp) IN (0, 6) THEN 1 ELSE 0 END AS is_weekend, -- DuckDB DOW: 0=Sun, 6=Sat
         bvalue_rolling_24h,
         CAST(NULL AS INTEGER) as is_data_complete, -- storico: completezza non tracciata
-        CAST(rms_medio AS DOUBLE) AS rms_medio, -- storico pre-energia: NULL
-        CAST(rms_max AS DOUBLE) AS rms_max,
-        CAST(picco_max AS DOUBLE) AS picco_max,
-        CAST(rms_max_ultime_6h AS DOUBLE) AS rms_max_ultime_6h,
-        CAST(rms_max_ultime_24h AS DOUBLE) AS rms_max_ultime_24h,
+        CAST(net_rms_log_ratio_med AS DOUBLE) AS net_rms_log_ratio_med, -- storico pre-energia: NULL
+        CAST(net_peak_log_ratio_med AS DOUBLE) AS net_peak_log_ratio_med,
+        CAST(n_stations_energy AS DOUBLE) AS n_stations_energy,
+        CAST(frac_stations_2x_rms AS DOUBLE) AS frac_stations_2x_rms,
+        CAST(net_rms_log_ratio_6h AS DOUBLE) AS net_rms_log_ratio_6h,
+        CAST(net_rms_log_ratio_max_24h AS DOUBLE) AS net_rms_log_ratio_max_24h,
+        CAST(frac_stations_2x_6h AS DOUBLE) AS frac_stations_2x_6h,
+        CAST(frac_stations_2x_max_24h AS DOUBLE) AS frac_stations_2x_max_24h,
         CAST(eventi_catalogo_6h AS DOUBLE) AS eventi_catalogo_6h, -- storico pre-catalogo: NULL
         CAST(magnitudo_max_6h AS DOUBLE) AS magnitudo_max_6h,
         Target_Allarme
@@ -405,7 +468,9 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
         eventi_ultime_48h, energia_max_ultime_48h, energia_media_ultime_48h,
         ora_del_giorno, giorno_della_settimana, is_notte, is_weekend,
         bvalue_rolling_24h, is_data_complete,
-        rms_medio, rms_max, picco_max, rms_max_ultime_6h, rms_max_ultime_24h,
+        net_rms_log_ratio_med, net_peak_log_ratio_med, n_stations_energy,
+        frac_stations_2x_rms, net_rms_log_ratio_6h, net_rms_log_ratio_max_24h,
+        frac_stations_2x_6h, frac_stations_2x_max_24h,
         eventi_catalogo_6h, magnitudo_max_6h, Target_Allarme
     FROM generated_features;
     """

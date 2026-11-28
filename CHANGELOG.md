@@ -12,6 +12,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Scaling causale in `train_temporal_transformer`**: `StandardScaler`
+  fittato SOLO sul sub-train (primi 85%, coda del 15% riservata alla
+  validation; zero leakage). Senza scaling le feature a scala larghissima
+  (energia RMS in counts) schiacciavano i logit del Transformer in una banda
+  strettissima (run reale 2026-11-28: [0.477, 0.489]) vanificando il
+  checkpoint su MCC. Il medesimo scaler finisce nel bundle per l'inferenza
+- **Bundle `.pkl` auto-consistente**: `main()` salva model + scaler +
+  feature_names + threshold + lookback in un unico artefatto joblib.
+  Train-serve skew azzerato: l'inferenza applica ESATTAMENTE lo stesso
+  preprocessing del training
+- **`scripts/predict_risk.py`**: inferenza standardizzata dal bundle (Transformer
+  con finestre 3D lookback, XGBoost Booster/sklearn, Random Forest), con
+  `--evaluate` (matrice di confusione su Target_Allarme) e `--output-csv`
+- **Vista `waveform_energy_robust_hourly`**: energia RSAM-like normalizzata
+  per stazione sulla mediana delle 168 ore PRECEDENTI (base settimanale
+  causale, `ROWS ... 1 PRECEDING`: mai il presente). Log-rapporto log10
+  immune a gain strumento e deriva non stazionaria; soglia 0.301 (~2x)
+  marca le stazioni a energia raddoppiata
+- **Feature robuste in `ml_features_ready_view`**: rimosse le 5 colonne non
+  stazionarie (`rms_medio`, `rms_max`, `picco_max`, `rms_max_ultime_6h/24h`)
+  e aggiunte 8 colonne causali: `net_rms_log_ratio_med`,
+  `net_peak_log_ratio_med`, `n_stations_energy`, `frac_stations_2x_rms` +
+  i rolling `net_rms_log_ratio_6h`, `net_rms_log_ratio_max_24h`,
+  `frac_stations_2x_6h`, `frac_stations_2x_max_24h`. Storico
+  retrocompatibile via ALTER TABLE
+
 - **Feature energetiche dal MiniSEED (RSAM-like)**: `compute_mseed_deltas`
   estrae ora, per ogni finestra oraria e stazione, RMS e picco di ampiezza
   della traccia pre-processata (stessa banda di detection). L'energia REALE

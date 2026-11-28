@@ -983,9 +983,32 @@ def train_temporal_transformer(
 
     # Preparazione dei dati 3D (Sliding Window)
 
+    from sklearn.preprocessing import StandardScaler
+
     X_train = X_train.ffill().fillna(0)
     if X_test is not None:
         X_test = X_test.ffill().fillna(0)
+
+    # Scaling CAUSALE: il fit usa SOLO il sub-train (primi 85%, coda del 15%
+    # riservata alla validation). Zero leakage su validation e test. Senza
+    # scaling le feature a scala larghissima (energia RMS in counts) schiaccia
+    # i logit del Transformer in una banda strettissima e vanifica il
+    # checkpoint su MCC (run reale 2026-11-28: logit in [0.477, 0.489]).
+    val_split_2d = max(1, int(len(X_train) * 0.85))
+    scaler = StandardScaler()
+    scaler.fit(X_train.iloc[:val_split_2d].values)
+
+    X_train = pd.DataFrame(
+        scaler.transform(X_train.values),
+        columns=X_train.columns,
+        index=X_train.index,
+    )
+    if X_test is not None:
+        X_test = pd.DataFrame(
+            scaler.transform(X_test.values),
+            columns=X_test.columns,
+            index=X_test.index,
+        )
 
     X_train_3d, y_train_1d = create_temporal_sequences(
         X_train, y_train, sequence_length
@@ -1192,6 +1215,14 @@ def train_temporal_transformer(
         },
         **train_results,
         **test_results,
+        # Metadati per il bundle di inferenza (joblib.dump in main): lo
+        # scaler serve a riprodurre lo STESSO preprocessing a serving,
+        # feature_names fissa l'ordine delle colonne, lookback e
+        # optimal_threshold azzerano il train-serve skew.
+        "scaler": scaler,
+        "optimal_threshold": float(best_thr),
+        "lookback": int(sequence_length),
+        "feature_names": list(X_train.columns),
     }
 
     logger.info("✅ Modello Transformer addestrato con successo!")
@@ -1747,10 +1778,37 @@ def main():
             df_comparison.to_csv(output_dir / "classifica_modelli.csv")
 
             if best_model is not None:
-                save_model(
-                    best_model,
-                    model_dir=output_dir,
-                    model_name=f"best_{best_model_name}_{args.model_output_name}",
+                # Bundle .pkl AUTO-CONSISTENTE: modello + scaler + ordine
+                # feature + soglia + lookback in un unico artefatto. L'inferenza
+                # (scripts/predict_risk.py) applica ESATTAMENTE lo stesso
+                # preprocessing del training: niente train-serve skew. Il
+                # salvataggio del modello nudo (save_model) resta disponibile
+                # per gli altri usi, ma il bundle e' l'artefatto di produzione.
+                best_metrics = results_dict[best_model_name]
+                artifact = {
+                    "model_type": best_model_name,
+                    "model": best_model,
+                    "scaler": best_metrics.get("scaler"),
+                    "feature_names": best_metrics.get(
+                        "feature_names", list(X_train.columns)
+                    ),
+                    "threshold": float(best_metrics.get("optimal_threshold", 0.5)),
+                    "lookback": best_metrics.get("lookback")
+                    if best_model_name == "transformer" else None,
+                }
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                bundle_path = (
+                    output_dir
+                    / f"best_{best_model_name}_{args.model_output_name}_{timestamp}.pkl"
+                )
+                joblib.dump(artifact, bundle_path)
+                logger.info(
+                    "✅ Bundle di inferenza salvato in: %s "
+                    "(scaler=%s, soglia=%.4f, lookback=%s)",
+                    bundle_path,
+                    "sì" if artifact["scaler"] is not None else "no",
+                    artifact["threshold"],
+                    artifact["lookback"],
                 )
         else:
             logger.warning("Nessun modello è stato addestrato con successo.")
