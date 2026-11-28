@@ -288,6 +288,10 @@ def main() -> None:
     )
     df["delta_seconds"] = df["arrival_epoch"] - df["event_reference_epoch"]
     df.sort_values(["event_id", "station"], inplace=True)
+    # Le directory padre del CSV di output possono non esistere (run reale
+    # 2026-11-28: runs/real_ingv/processed/ assente -> crash dopo 80s di
+    # elaborazione). pandas non le crea: si fa qui.
+    args.output_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.output_csv, index=False)
     logger.info(f"Salvato {args.output_csv} ({len(df)} righe).")
 

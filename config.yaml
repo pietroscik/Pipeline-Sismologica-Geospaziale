@@ -72,3 +72,14 @@ mobile:
     alert: "mobile/config/alert_config.yaml"
     monitor: "mobile/config/monitor_config.yaml"
     retraining: "mobile/config/retraining_config.yaml"
+catalog:
+  # Ground truth del Target_Allarme: il catalogo eventi INGV (fdsnws/event).
+  # Target = 1 per l'ora t se esiste almeno un evento con magnitude >=
+  # mag_threshold entro horizon_hours da t.
+  # Tarato il 2026-11-28 sul catalogo reale dei Campi Flegrei (950 eventi in
+  # 25 giorni, M 0.2-5.4): M>=3.5 con H=6h dà l'11.7% di ore positive.
+  center_lat: 40.82
+  center_lon: 14.14
+  radius_km: 25
+  mag_threshold: 3.5
+  horizon_hours: 6

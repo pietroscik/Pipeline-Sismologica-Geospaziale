@@ -353,9 +353,10 @@ class TestDataCompleteness:
         # Le ore mancanti (es. giorno 3 senza dati) sono righe esplicite:
         # numero_eventi=0 e flag 0
         day3 = df[pd.to_datetime(df["timestamp"]).dt.date.astype(str) == "2023-01-03"]
-        # 12 ore (00-11): il giorno 3 è troncato dal boundary delle ultime 24h
-        # (max dati = 4 gen 12:00 -> incluse solo ore < 3 gen 12:00)
-        assert len(day3) == 12
+        # 24 ore: dal target da catalogo (2026-11-28) il boundary esclude solo
+        # le ultime 6h (max dati = 4 gen 12:00 -> incluse le ore < 4 gen 06:00,
+        # cioè il giorno 3 completo)
+        assert len(day3) == 24
         assert (day3["numero_eventi"] == 0).all()
         assert (day3["is_data_complete"] == 0).all()
 
@@ -395,3 +396,136 @@ class TestDataCompleteness:
             assert len(df) > 0
         finally:
             con.close()
+
+
+# ---------------------------------------------------------------------------
+# Target da catalogo eventi INGV (ground truth, 2026-11-28)
+# ---------------------------------------------------------------------------
+
+def _make_catalog_run(tmp_path, monkeypatch, events=None):
+    """Run con soli delta + catalogo eventi: restituisce (run_dir, db_path)."""
+    db_path = tmp_path / "catalog_test.duckdb"
+    monkeypatch.setattr(ingest, "DUCKDB_PATH", db_path)
+    run_dir = tmp_path / "run_cat"
+    (run_dir / "interim").mkdir(parents=True)
+
+    # 3 giorni di delta orari per 2 stazioni (banda ~9s come i dati reali)
+    rows = []
+    base = pd.Timestamp("2025-11-01")
+    for day in range(3):
+        for h in range(24):
+            for st in ("CAAM", "CAWE"):
+                t = base + pd.Timedelta(days=day, hours=h)
+                rows.append({
+                    "event_id": f"e{day}{h}{st}", "station": st, "network": "IV",
+                    "channel": "HHZ", "arrival_epoch": int(t.timestamp()),
+                    "arrival_iso": t, "event_reference_epoch": int(t.timestamp()),
+                    "delta_seconds": 9.0, "run_id": "run_cat",
+                })
+    pd.DataFrame(rows).to_csv(
+        run_dir / "interim" / "station_deltas_from_mseed.csv", index=False
+    )
+
+    if events is not None:
+        pd.DataFrame(events).to_csv(
+            run_dir / "interim" / "catalog_events.csv", index=False
+        )
+    return run_dir, db_path
+
+
+class TestCatalogTarget:
+    """Il Target_Allarme deriva dal catalogo INGV, non più da
+    max(delta_seconds) > 15.0 (degenere sui dati reali: banda 7.96-9.88s)."""
+
+    EVENTS = [
+        {"event_id": "EV1", "time": "2025-11-01T05:30:00",
+         "latitude": 40.83, "longitude": 14.13, "depth_km": 2.0,
+         "mag_type": "ML", "magnitude": 4.0,
+         "event_location_name": "Campi Flegrei", "event_type": "earthquake"},
+        {"event_id": "EV2", "time": "2025-11-02T10:00:00",
+         "latitude": 40.83, "longitude": 14.13, "depth_km": 2.0,
+         "mag_type": "ML", "magnitude": 2.0,
+         "event_location_name": "Campi Flegrei", "event_type": "earthquake"},
+    ]
+
+    def test_target_1_per_ore_precedenti_evento_rilevante(self, tmp_path, monkeypatch):
+        """M4.0 alle 05:30 del 01: target=1 per le ore 00-05 (orizzonte 6h)."""
+        run_dir, db_path = _make_catalog_run(
+            tmp_path, monkeypatch, events=self.EVENTS)
+        ingest.ingest_run_data("run_cat", "run_cat", run_dir, "mseed")
+
+        con = duckdb.connect(str(db_path), read_only=True)
+        df = con.execute(
+            "SELECT timestamp, Target_Allarme FROM ml_features_ready_view "
+            "ORDER BY timestamp"
+        ).df()
+        con.close()
+
+        positive = df[df.Target_Allarme == 1]["timestamp"].tolist()
+        assert len(positive) == 6
+        assert all(t.hour <= 5 and t.day == 1 for t in pd.to_datetime(positive))
+
+    def test_evento_sotto_soglia_non_genera_target(self, tmp_path, monkeypatch):
+        """Il M2.0 (soglia 3.5) del 02 non produce alcun positivo quel giorno."""
+        run_dir, db_path = _make_catalog_run(
+            tmp_path, monkeypatch, events=self.EVENTS)
+        ingest.ingest_run_data("run_cat", "run_cat", run_dir, "mseed")
+
+        con = duckdb.connect(str(db_path), read_only=True)
+        df = con.execute(
+            "SELECT timestamp, Target_Allarme FROM ml_features_ready_view "
+            "WHERE timestamp >= TIMESTAMP '2025-11-02' ORDER BY timestamp"
+        ).df()
+        con.close()
+        assert df.Target_Allarme.sum() == 0
+
+    def test_catalogo_assente_target_tutto_zero(self, tmp_path, monkeypatch):
+        """Senza catalogo nessun falso positivo: target 0 ovunque."""
+        run_dir, db_path = _make_catalog_run(tmp_path, monkeypatch, events=None)
+        ingest.ingest_run_data("run_cat", "run_cat", run_dir, "mseed")
+
+        con = duckdb.connect(str(db_path), read_only=True)
+        tot, pos = con.execute(
+            "SELECT count(*), sum(Target_Allarme) FROM ml_features_ready_view"
+        ).fetchone()
+        con.close()
+        assert tot > 0 and pos == 0
+
+    def test_feature_passate_del_catalogo(self, tmp_path, monkeypatch):
+        """eventi_catalogo_6h e magnitudo_max_6h guardano solo al PASSATO."""
+        run_dir, db_path = _make_catalog_run(
+            tmp_path, monkeypatch, events=self.EVENTS)
+        ingest.ingest_run_data("run_cat", "run_cat", run_dir, "mseed")
+
+        con = duckdb.connect(str(db_path), read_only=True)
+        df = con.execute(
+            "SELECT timestamp, eventi_catalogo_6h, magnitudo_max_6h "
+            "FROM ml_features_ready_view WHERE timestamp < "
+            "TIMESTAMP '2025-11-01 05:00' ORDER BY timestamp"
+        ).df()
+        con.close()
+        # Prima delle 05 (ora dell'evento) le finestre passate sono vuote:
+        # nessun leakage del futuro nelle feature
+        assert (df.eventi_catalogo_6h == 0).all()
+        assert (df.magnitudo_max_6h == 0).all()
+
+    def test_ingest_catalogo_idempotente(self, tmp_path, monkeypatch):
+        """Doppia ingest dello stesso catalogo non duplica gli eventi."""
+        run_dir, db_path = _make_catalog_run(
+            tmp_path, monkeypatch, events=self.EVENTS)
+        ingest.ingest_run_data("run_cat", "run_cat", run_dir, "mseed")
+        ingest.ingest_run_data("run_cat", "run_cat", run_dir, "mseed")
+
+        con = duckdb.connect(str(db_path), read_only=True)
+        n = con.execute("SELECT count(*) FROM catalog_events").fetchone()[0]
+        con.close()
+        assert n == len(self.EVENTS)
+
+    def test_parametri_target_da_config(self, monkeypatch):
+        """mag_threshold e horizon_hours arrivano da config.yaml (sezione catalog)."""
+        monkeypatch.setattr(
+            ingest, "load_config",
+            lambda *a, **k: {"catalog": {"mag_threshold": 4.5, "horizon_hours": 3}},
+        )
+        params = ingest.get_catalog_target_params()
+        assert params == {"mag_threshold": 4.5, "horizon_hours": 3}
