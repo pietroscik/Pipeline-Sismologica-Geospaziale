@@ -873,14 +873,24 @@ try:
 
     class SeismicTransformer(nn.Module):
 
-        def __init__(self, num_features, d_model=32, nhead=4, num_layers=2):
+        def __init__(self, num_features, d_model=32, nhead=4, num_layers=2,
+                     dropout=0.3):
 
             super(SeismicTransformer, self).__init__()
 
             self.embedding = nn.Linear(num_features, d_model)
 
+            # Dropout esplicito: con lo StandardScaler (PR #49) le feature sono
+            # su scala standardizzata e il gradiente non e' piu' attenuato ->
+            # su ~1.400 finestre di training la rete memorizza il train set in
+            # <10 epoche (run reale 2026-11-28: train loss 1.09->0.24 mentre
+            # val loss 1.66->5.67). Il dropout e' la regolarizzazione esplicita
+            # che sostituisce quella implicita persa con lo scaling.
+            self.emb_dropout = nn.Dropout(p=dropout)
+
             encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model, nhead=nhead, batch_first=True
+                d_model=d_model, nhead=nhead, batch_first=True,
+                dropout=dropout,
             )
 
             self.transformer_encoder = nn.TransformerEncoder(
@@ -895,7 +905,7 @@ try:
 
         def forward(self, x):
 
-            x = self.embedding(x)
+            x = self.emb_dropout(self.embedding(x))
 
             x = self.transformer_encoder(x)
 
@@ -1059,7 +1069,11 @@ def train_temporal_transformer(
     num_pos = (y_train == 1).sum()
     pos_weight = torch.tensor([num_neg / max(num_pos, 1)], dtype=torch.float32)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    # AdamW con weight decay esplicito: con lo StandardScaler (PR #49) la
+    # regolarizzazione implicita dello scaling grezzo e' sparita e serve
+    # quella esplicita (run reale 2026-11-28: overfitting con train loss
+    # 0.24 e val loss 5.67 alla decima epoca).
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-2)
 
     # Scheduler legato alla loss di validazione (o train come fallback)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -1700,7 +1714,9 @@ def main():
         "--epochs", type=int, default=50, help="Numero di epoche per Deep Learning"
     )
     parser.add_argument(
-        "--learning-rate", type=float, default=0.001, help="Learning rate"
+        "--learning-rate", type=float, default=0.0002,
+        help="Learning rate (default 2e-4: con lo scaler le feature standardizzate "
+             "rendono 1e-3 troppo aggressivo, vedi PR #49 e run 2026-11-28)"
     )
     parser.add_argument(
         "--sequence-length",
