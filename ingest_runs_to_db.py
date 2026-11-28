@@ -129,8 +129,48 @@ def initialize_db_schema(con: duckdb.DuckDBPyConnection):
             Target_Allarme INTEGER,
             PRIMARY KEY (timestamp)
         );
+
+        CREATE TABLE IF NOT EXISTS catalog_events (
+            -- Catalogo eventi INGV (fdsnws/event): ground truth del
+            -- Target_Allarme. Popolata da download_cf_events.py + ingest.
+            event_id VARCHAR PRIMARY KEY,
+            time TIMESTAMP,
+            latitude DOUBLE,
+            longitude DOUBLE,
+            depth_km DOUBLE,
+            mag_type VARCHAR,
+            magnitude DOUBLE,
+            event_location_name VARCHAR,
+            event_type VARCHAR
+        );
     """)
+    # La tabella storica puo' esistere gia' senza le colonne del catalogo:
+    # ALTER ... IF NOT EXISTS non e' portabile su tutte le versioni DuckDB,
+    # si usa un fallback silenzioso se la colonna esiste gia'.
+    for _col_sql in (
+        "ALTER TABLE ml_features_timeseries ADD COLUMN eventi_catalogo_6h DOUBLE",
+        "ALTER TABLE ml_features_timeseries ADD COLUMN magnitudo_max_6h DOUBLE",
+    ):
+        try:
+            con.execute(_col_sql)
+        except Exception:
+            pass  # colonna gia' presente
     logger.info("Schema database verificato/creato.")
+
+def get_catalog_target_params() -> dict:
+    """Parametri del target da catalogo (config.yaml > default).
+
+    Target_Allarme = 1 per l'ora t se il catalogo INGV contiene almeno un
+    evento con magnitude >= mag_threshold entro horizon_hours da t.
+    Tarato il 2026-11-28 sul catalogo reale dei Campi Flegrei (950 eventi nel
+    mese, M 0.2-5.4): M>=3.5 con H=6h dà l'11.7% di ore positive.
+    """
+    catalog_cfg = load_config().get("catalog", {}) or {}
+    return {
+        "mag_threshold": float(catalog_cfg.get("mag_threshold", 3.5)),
+        "horizon_hours": int(catalog_cfg.get("horizon_hours", 6)),
+    }
+
 
 def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
     """
@@ -139,7 +179,15 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
     pronta per essere usata dal modello.
     """
     logger.info("Aggiornamento della vista 'ml_features_ready_view' per unire dati nuovi e storici...")
-    
+
+    target_params = get_catalog_target_params()
+    mag_threshold = target_params["mag_threshold"]
+    horizon_hours = target_params["horizon_hours"]
+    logger.info(
+        f"Target da catalogo: magnitudine >= {mag_threshold}, orizzonte {horizon_hours}h "
+        f"(se la tabella catalog_events è vuota il target resta 0)"
+    )
+
     # NOTA: Questa query è il "cuore" del feature engineering.
     # Centralizzarla qui la rende l'unica fonte di verità per la preparazione dei dati di training.
     view_sql = """
@@ -178,6 +226,16 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             -- 'stations', che può contenere stazioni fuori periodo)
             SELECT count(DISTINCT station_code) AS stazioni_attese FROM raw_deltas
         ),
+        catalog_hourly AS (
+            -- Aggregato orario del catalogo eventi INGV: base per le feature
+            -- esplicative (finestre PASSATE) e per il Target_Allarme (FUTURO).
+            SELECT
+                date_trunc('hour', time) AS hour,
+                count(*) AS catalog_n,
+                max(magnitude) AS catalog_max
+            FROM catalog_events
+            GROUP BY date_trunc('hour', time)
+        ),
         hourly_aggregates AS (
             -- Griglia + conteggi: le ore mancanti diventano righe con
             -- numero_eventi=0 e is_data_complete=0
@@ -187,6 +245,8 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
                 COALESCE(c.energia_max, 0) AS energia_max,
                 COALESCE(c.energia_media, 0) AS energia_media,
                 COALESCE(c.energia_std, 0) AS energia_std,
+                ch.catalog_n AS catalog_n,
+                ch.catalog_max AS catalog_max,
                 CASE
                     WHEN e.stazioni_attese = 0 THEN 0
                     WHEN COALESCE(c.stazioni_attive, 0)::DOUBLE / e.stazioni_attese >= 0.95 THEN 1
@@ -195,11 +255,16 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             FROM hourly_grid g
             CROSS JOIN expected_stations e
             LEFT JOIN hourly_counts c ON c.hour = g.timestamp
+            LEFT JOIN catalog_hourly ch ON ch.hour = g.timestamp
         ),
         rolling_features AS (
-            -- 2. Calcola le feature su finestre mobili
+            -- 2. Calcola le feature su finestre mobili. Le feature del
+            -- catalogo (eventi_catalogo_6h, magnitudo_max_6h) guardano solo
+            -- al PASSATO: mai data leakage dal target nel training.
             SELECT
                 *,
+                COALESCE(sum(catalog_n) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW), 0) AS eventi_catalogo_6h,
+                COALESCE(max(catalog_max) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW), 0) AS magnitudo_max_6h,
                 sum(numero_eventi) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS eventi_ultime_6h,
                 max(energia_max) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS energia_max_ultime_6h,
                 avg(energia_media) OVER (ORDER BY timestamp ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) AS energia_media_ultime_6h,
@@ -215,15 +280,24 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             FROM hourly_aggregates
         ),
         target_generation AS (
-            -- 3. Genera il target cercando eventi significativi nel futuro
+            -- 3. Target da CATALOGO INGV (ground truth): 1 se nelle prossime
+            -- H ore il catalogo contiene almeno un evento con magnitude >= M.
+            -- Sostituisce il proxy max(delta_seconds) > 15.0, degenere sui
+            -- dati reali (banda 7.96-9.88 s senza segnale, misurata 2026-11-28:
+            -- 144 ore tutte con target 0). Se catalog_events è vuota il
+            -- target resta 0 su tutto (nessun falso positivo).
             SELECT
-                *,
-                max(energia_max) OVER (ORDER BY timestamp ROWS BETWEEN 1 FOLLOWING AND 24 FOLLOWING) AS max_energia_futura,
-                CASE WHEN max(energia_max) OVER (ORDER BY timestamp ROWS BETWEEN 1 FOLLOWING AND 24 FOLLOWING) > 15.0 THEN 1 ELSE 0 END AS Target_Allarme
-            FROM rolling_features
+                r.*,
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM catalog_events e
+                    WHERE e.magnitude >= {mag_threshold}
+                      AND e.time > r.timestamp
+                      AND e.time <= r.timestamp + INTERVAL '{horizon_hours}' HOUR
+                ) THEN 1 ELSE 0 END AS Target_Allarme
+            FROM rolling_features r
         ),
         data_boundary AS (
-            -- Massimo timestamp dei dati grezzi: esclude le ultime 24h dove il
+            -- Massimo timestamp dei dati grezzi: esclude le ultime H ore dove il
             -- target non è calcolabile in modo affidabile.
             -- NOTA: calcolato in un CTE separato perché DuckDB non ammette
             -- aggregati in una subquery dentro il WHERE.
@@ -248,10 +322,12 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
             -- Evita che uno 0 dovuto a telemetria assente sia confuso con
             -- assenza di attività sismica.
             is_data_complete,
+            eventi_catalogo_6h,
+            magnitudo_max_6h,
             Target_Allarme
         FROM target_generation, data_boundary
-        -- Escludiamo le ultime 24 ore dove non possiamo calcolare un target affidabile
-        WHERE timestamp < data_boundary.max_ts - INTERVAL '24' HOUR
+        -- Escludiamo le ultime H ore dove non possiamo calcolare un target affidabile
+        WHERE timestamp < data_boundary.max_ts - INTERVAL '{horizon_hours}' HOUR
     )
     -- Seleziona tutte le colonne dalla tabella delle feature storiche
     -- e le unisce con quelle generate al momento.
@@ -268,6 +344,8 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
         CASE WHEN extract('dow' from timestamp) IN (0, 6) THEN 1 ELSE 0 END AS is_weekend, -- DuckDB DOW: 0=Sun, 6=Sat
         bvalue_rolling_24h,
         CAST(NULL AS INTEGER) as is_data_complete, -- storico: completezza non tracciata
+        CAST(eventi_catalogo_6h AS DOUBLE) AS eventi_catalogo_6h, -- storico pre-catalogo: NULL
+        CAST(magnitudo_max_6h AS DOUBLE) AS magnitudo_max_6h,
         Target_Allarme
     FROM ml_features_timeseries
     
@@ -280,11 +358,66 @@ def create_or_replace_ml_view(con: duckdb.DuckDBPyConnection):
         eventi_ultime_24h, energia_max_ultime_24h, energia_media_ultime_24h,
         eventi_ultime_48h, energia_max_ultime_48h, energia_media_ultime_48h,
         ora_del_giorno, giorno_della_settimana, is_notte, is_weekend,
-        bvalue_rolling_24h, is_data_complete, Target_Allarme
+        bvalue_rolling_24h, is_data_complete,
+        eventi_catalogo_6h, magnitudo_max_6h, Target_Allarme
     FROM generated_features;
     """
+    # I placeholder {mag_threshold}/{horizon_hours} nel SQL vengono interpolati
+    # qui (float per la soglia: il valore arriva validato da config/CLI)
+    view_sql = view_sql.replace("{mag_threshold}", str(mag_threshold)).replace(
+        "{horizon_hours}", str(horizon_hours)
+    )
     con.execute(view_sql)
     logger.info("✅ Vista 'ml_features_ready_view' creata/aggiornata con successo.")
+
+def ingest_catalog_events(con: duckdb.DuckDBPyConnection, catalog_csv_path: Path) -> int:
+    """Ingerisce il catalogo eventi INGV scaricato da download_cf_events.py.
+
+    Il catalogo è il ground truth del Target_Allarme: senza di esso la vista
+    ML genera solo target 0. L'ingest è idempotente (chiave event_id).
+    """
+    if not catalog_csv_path.exists():
+        logger.warning(
+            f"File catalogo eventi non trovato ({catalog_csv_path}): "
+            "il Target_Allarme resterà 0. Scaricarlo con "
+            "scripts/download_cf_events.py."
+        )
+        return 0
+    df = pd.read_csv(catalog_csv_path)
+    required = {"event_id", "time", "latitude", "longitude", "magnitude"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"Catalogo eventi {catalog_csv_path} privo delle colonne {sorted(missing)}"
+        )
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    df = df.dropna(subset=["time", "magnitude"])
+    # Registrazione del DataFrame come tabella temporanea (uso standard DuckDB)
+    con.register("df_catalog", df)
+    con.execute(
+        """
+        INSERT INTO catalog_events (
+            event_id, time, latitude, longitude, depth_km,
+            mag_type, magnitude, event_location_name, event_type
+        )
+        SELECT event_id, time, latitude, longitude, depth_km,
+               mag_type, magnitude, event_location_name, event_type
+        FROM df_catalog
+        ON CONFLICT (event_id) DO UPDATE SET
+            time = EXCLUDED.time,
+            latitude = EXCLUDED.latitude,
+            longitude = EXCLUDED.longitude,
+            depth_km = EXCLUDED.depth_km,
+            mag_type = EXCLUDED.mag_type,
+            magnitude = EXCLUDED.magnitude,
+            event_location_name = EXCLUDED.event_location_name,
+            event_type = EXCLUDED.event_type;
+        """
+    )
+    con.unregister("df_catalog")
+    logger.info(f"Inseriti/aggiornati {len(df)} eventi del catalogo in catalog_events.")
+    return len(df)
+
 
 def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str, notes: str = None, config_path: Path = None):
     """Ingerisce i dati di una singola run nel database DuckDB."""
@@ -440,6 +573,14 @@ def ingest_run_data(run_id: str, run_name: str, run_dir: Path, source_type: str,
 
     # TODO: Ingestione anomalies (richiede che lo script di allerta le salvi in un CSV standard)
     # Per ora, lo schema è pronto, ma l'ingestione è da implementare quando gli script di allerta produrranno un output standard.
+
+    # Ingestione del catalogo eventi INGV (ground truth del target): cercato
+    # in interim/ come output di download_cf_events.py, oppure nella root
+    # della run per chi lo scarica manualmente.
+    catalog_csv = run_dir / "interim" / "catalog_events.csv"
+    if not catalog_csv.exists():
+        catalog_csv = run_dir / "catalog_events.csv"
+    ingest_catalog_events(con, catalog_csv)
 
     # Dopo aver ingerito i dati, aggiorniamo la vista per il ML
     create_or_replace_ml_view(con)

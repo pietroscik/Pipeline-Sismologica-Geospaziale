@@ -469,6 +469,36 @@ Esempi di uso:
         "--download-end", type=str, help="Data fine download (YYYY-MM-DD)"
     )
 
+    # Pass-through verso download_cf_waveforms.py: evita di dover lanciare il
+    # downloader separatamente dal notebook (richieste della run reale
+    # 2026-11-28: --channels HHZ EHZ e --workers 4 non erano esposti)
+    parser.add_argument(
+        "--download-channels", nargs="*",
+        help="Canali da scaricare (es. HHZ EHZ). Default: config.yaml"
+    )
+
+    parser.add_argument(
+        "--download-workers", type=int,
+        help="Worker paralleli per il download (default: 4)"
+    )
+
+    parser.add_argument(
+        "--download-stations-file", type=str,
+        help="File con le stazioni da scaricare (default: selected_stations.txt se presente)"
+    )
+
+    parser.add_argument(
+        "--download-block-days", type=int,
+        help="Giorni per blocco di download (default: 1)"
+    )
+
+    parser.add_argument(
+        "--download-events", action="store_true",
+        help="Scarica anche il catalogo eventi INGV per la finestra indicata "
+             "(ground truth del Target_Allarme, salvato in interim/catalog_events.csv)."
+    )
+
+
     # === NOVITÀ: Opzioni per analisi mobile e allarmi ===
 
     parser.add_argument(
@@ -707,7 +737,32 @@ Esempi di uso:
 
                     cmd_download.extend(["--stations-file", selected_stations_txt])
 
+                # Pass-through delle opzioni di download esposte dalla CLI
+                if args.download_stations_file:
+                    cmd_download.extend(["--stations-file", args.download_stations_file])
+                if args.download_channels:
+                    cmd_download.extend(["--channels"] + args.download_channels)
+                if args.download_workers:
+                    cmd_download.extend(["--workers", str(args.download_workers)])
+                if args.download_block_days:
+                    cmd_download.extend(["--block-days", str(args.download_block_days)])
+
                 run_cmd(cmd_download, timeout=args.timeout * 4)  # Download can be long
+
+                # Catalogo eventi INGV (ground truth del target da catalogo):
+                # scaricato nella finestra del download, in interim/ per l'ingest
+                if args.download_events:
+                    events_out = run_dir / "interim" / "catalog_events.csv"
+                    events_out.parent.mkdir(parents=True, exist_ok=True)
+                    cmd_events = [
+                        python_exe,
+                        scripts_dir / "download_cf_events.py",
+                        "--start", f"{args.download_start}T00:00:00",
+                        "--end", f"{args.download_end}T23:59:59",
+                        "--output-csv", str(events_out),
+                    ]
+                    run_cmd(cmd_events, timeout=args.timeout)
+                    logger.info("Catalogo eventi salvato per l'ingest in interim/.")
 
                 logger.info("Fase 1 completata.")
 
@@ -982,6 +1037,30 @@ Esempi di uso:
         # === NOVITÀ: Esecuzione Analisi Mobile (dopo Fase 4) ===
 
         if args.mobile_analysis and args.start_phase <= 4:
+
+            # Il training legge la vista ml_features_ready_view dal DuckDB:
+            # su un database ancora inesistente (runtime nuovo) fallirebbe.
+            # Con --auto-ingest attivo si anticipa l'ingest (idempotente,
+            # quella di fine pipeline la ripete senza duplicati).
+            duckdb_path = PROJECT_ROOT / "data" / "db" / "seismic_output.duckdb"
+            if args.auto_ingest and not duckdb_path.exists():
+                logger.warning(
+                    "DuckDB assente: ingest anticipata per rendere la vista ML "
+                    "disponibile al training (verrà ripetuta a fine pipeline, "
+                    "è idempotente)."
+                )
+                pre_source = (
+                    "mseed" if args.run_download or (run_dir / "waveforms").exists()
+                    else "catalog"
+                )
+                run_cmd([
+                    python_exe,
+                    str(PROJECT_ROOT / "ingest_runs_to_db.py"),
+                    "--run-id", args.run_name,
+                    "--run-name", f"Analisi Pipeline: {args.run_name}",
+                    "--run-dir", str(run_dir),
+                    "--source-type", pre_source,
+                ], timeout=args.timeout)
 
             logger.info("")
 

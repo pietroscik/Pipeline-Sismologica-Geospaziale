@@ -11,7 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Target da catalogo eventi INGV (ground truth)**: `Target_Allarme = 1` se
+  nelle prossime `horizon_hours` il catalogo contiene almeno un evento con
+  `magnitude >= mag_threshold` entro 25 km. Tarato sul catalogo reale dei
+  Campi Flegrei (950 eventi in 25 giorni, M 0.2-5.4): M>=3.5 con H=6h dà
+  l'11.7% di ore positive. Sostituisce il proxy `max(delta_seconds) > 15.0`,
+  degenere sui dati reali (banda 7.96-9.88 s senza segnale, 144 ore con
+  target 0). Parametri ritarabili in `config.yaml` (sezione `catalog`)
+- `scripts/download_cf_events.py`: downloader del catalogo con retry backoff
+  (5/15/45s), 4xx permanenti senza retry, filtro geografico configurabile
+- Feature esplicative dal catalogo: `eventi_catalogo_6h` e `magnitudo_max_6h`
+  (solo finestre PASSATE, nessun data leakage)
+- `run_pipeline.py`: flag passthrough `--download-channels/--download-workers/
+  --download-stations-file/--download-block-days` e `--download-events`
+  (catalogo per la finestra del download): il download non richiede più
+  comandi separati dal notebook
+
 ### Fixed
+- `compute_mseed_deltas.py`: il CSV di output crea le directory padre (run
+  reale 2026-11-28: crash dopo 80s di elaborazione perché
+  `runs/real_ingv/processed/` non esisteva)
+- `run_pipeline.py`: con `--auto-ingest` su un database ancora inesistente
+  l'ingest viene anticipata prima dell'analisi mobile (il training legge la
+  vista ML dal DuckDB e falliva su runtime nuovi)
 - Downloader FDSN: il client ObsPy cached il cui service discovery è fallito
   transitoriamente (rate-limit con worker paralleli) restava 'senza
   dataselect' per l'intera vita del thread, fallendo ogni task successivo
